@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-import cufflinks as cf
+# import cufflinks as cf
 import yfinance as yf
 #from pandas_datareader import data
 from datetime import datetime
@@ -111,6 +111,7 @@ company_name = (
 company_country = ticker_info.get("country") or "Information unavailable"
 st.subheader(company_name)
 st.caption(f"Ticker: {user_ticker}  |  Country: {company_country}")
+
 
 weekly = (
     df1.set_index("Date")
