@@ -47,7 +47,7 @@ ema_20 = 20
 
 st.title('Stock App')
 
-user_input = st.text_input('Enter Ticker','aapl')
+user_input = st.text_input('Enter Ticker','0992.hk')
 user_input_start = st.date_input('Enter Start Date',datetime.date(2019, 1, 1))
 user_input_end = st.date_input('Enter End Date',datetime.date(2026, 8, 1))
 
