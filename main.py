@@ -18,7 +18,6 @@ from plotly import express as px
 ##from fbprophet.plot import plot_plotly
 from backtesting import Strategy
 from backtesting.lib import crossover
-from backtesting.test import SMA
 from backtesting.lib import SignalStrategy, TrailingStrategy
 from backtesting import Backtest
 
@@ -42,6 +41,16 @@ import streamlit.components.v1 as stc
 #ema_100 = 100
 ema_10 = 10
 ema_20 = 20
+
+
+def EMA(values, period):
+    """Return an exponential moving average for backtesting.py indicators."""
+    return (
+        pd.Series(values)
+        .ewm(span=period, min_periods=period, adjust=False)
+        .mean()
+        .to_numpy()
+    )
 
 #####################################################################################
 
@@ -164,8 +173,11 @@ def display_table(data, rows=None):
     st.dataframe(table, width="stretch", hide_index=True)
 
 
-st.subheader('Market Data')
-display_table(df[["Date", "Open", "High", "Low", "Close", "Volume"]], rows=30)
+st.subheader('Daily Market Data')
+display_table(df[["Date", "Open", "High", "Low", "Close", "Volume"]], rows=10)
+
+# st.subheader('Weekly Market Data')
+# display_table(weekly[["Date", "Open", "High", "Low", "Close"]], rows=30)
 
 df["ema_10"] = df.Close.ewm(span = ema_10, min_periods = ema_10).mean() 
 df["ema_20"] = df.Close.ewm(span = ema_20, min_periods = ema_20).mean() 
@@ -175,24 +187,24 @@ df=df.dropna()
 
 #DAILY CHART
 
-st.subheader(' ')
-st.subheader('Day Chart')
-def plot_raw_data():
-	fig = go.Figure()
-	fig.add_trace(go.Scatter(x=df['Date'], y=df['Close'], name="stock_close"))
-	st.plotly_chart(fig, key="daily_line_chart")
+# st.subheader(' ')
+# st.subheader('Day Chart')
+# def plot_raw_data():
+# 	fig = go.Figure()
+# 	fig.add_trace(go.Scatter(x=df['Date'], y=df['Close'], name="stock_close"))
+# 	st.plotly_chart(fig, key="daily_line_chart")
 	
-plot_raw_data()
+# plot_raw_data()
 
 #####################################################################################
 
 #Dividends and stock splits
 
-if not hist1.empty:
-    fig3 = px.line(hist1, title="Dividends")
-    st.plotly_chart(fig3, key="dividends_chart")
-else:
-    st.info(f"No dividend data is available for {user_input.upper()} in the selected period.")
+# if not hist1.empty:
+#     fig3 = px.line(hist1, title="Dividends")
+#     st.plotly_chart(fig3, key="dividends_chart")
+# else:
+#     st.info(f"No dividend data is available for {user_input.upper()} in the selected period.")
 
 #####################################################################################
 
@@ -218,14 +230,14 @@ def plot_candlestick(data, title):
     fig.update_layout(title=title, xaxis_rangeslider_visible=False)
     return fig
 
-
+st.subheader('Day Chart')
 fig4 = plot_candlestick(df, user_input)
 st.plotly_chart(fig4, key="daily_candlestick_chart")
 
 #####################################################################################
 
-st.subheader('Week Chart')
-display_table(weekly, rows=20)
+st.subheader('Weekly Market Data')
+display_table(weekly, rows=10)
 
 #WEEKLY CHART
 
@@ -270,14 +282,16 @@ df["position"] = np.where(df["ema_10"] > df["ema_20"], 1, -1 )
 weekly_position = weekly[["Date","Close","ema_10","ema_20","position"]]
 daily_position = df[["Date","Close","ema_10","ema_20","position"]]
 
-st.subheader('Position')    
+# st.subheader('Daily Position')   
+# display_table(daily_position, rows=1000)
 
-display_table(weekly_position, rows=26)
-st.subheader('')
-st.subheader('')
+# st.subheader('Weekly Position') 
+# display_table(weekly_position, rows=1000)
+# st.subheader('')
+# st.subheader('')
 
 
-display_table(daily_position, rows=10)
+
 
 #####################################################################################
 
@@ -291,18 +305,18 @@ def openHTML(test_html,width=900,height=800):
 
 #BackTest
 
-class SmaCross(SignalStrategy, TrailingStrategy):
-    s1 = 10
-    s2 = 20
+class EmaCross(SignalStrategy, TrailingStrategy):
+    fast_period = 10
+    slow_period = 20
     
     def init(self):
         super().init()
         
-        sma1 = self.I(SMA, self.data.Close, self.s1)
-        sma2 = self.I(SMA, self.data.Close, self.s2)
+        ema1 = self.I(EMA, self.data.Close, self.fast_period)
+        ema2 = self.I(EMA, self.data.Close, self.slow_period)
 
-        # Where sma1 crosses sma2 upwards. Diff gives us [-1,0, *1*]
-        signal = (pd.Series(sma1) > sma2).astype(int).diff().fillna(0)
+        # Where EMA 10 crosses EMA 20 upwards. Diff gives us [-1, 0, 1].
+        signal = (pd.Series(ema1) > ema2).astype(int).diff().fillna(0)
         signal = signal.replace(-1, 0)  # Upwards/long only
 
         entry_size = signal * .95
@@ -319,15 +333,187 @@ class SmaCross(SignalStrategy, TrailingStrategy):
 
 #####################################################################################
 
+class EmaCrossLongOnly(SignalStrategy):
+    """Long-only EMA crossover with an EMA crossover exit."""
+
+    fast_period = 10
+    slow_period = 20
+
+    def init(self):
+        super().init()
+
+        ema_fast = self.I(EMA, self.data.Close, self.fast_period)
+        ema_slow = self.I(EMA, self.data.Close, self.slow_period)
+
+        above_slow = (pd.Series(ema_fast) > ema_slow).astype(int)
+        crossover_signal = above_slow.diff().fillna(0)
+
+        # Buy only when EMA 10 crosses above EMA 20.
+        entry_signal = (crossover_signal > 0).astype(float) * 0.95
+        # Close the long position when EMA 20 crosses above EMA 10.
+        exit_signal = (crossover_signal < 0).astype(float)
+
+        self.set_signal(
+            entry_size=entry_signal,
+            exit_portion=exit_signal,
+        )
+
+
+class EmaCross30_60(EmaCross):
+    """EMA 30/60 crossover with ATR trailing stop."""
+
+    fast_period = 30
+    slow_period = 60
+
+
+class EmaCrossLongOnly30_60(EmaCrossLongOnly):
+    """Long-only EMA 30/60 crossover with EMA crossover exit."""
+
+    fast_period = 30
+    slow_period = 60
+
+
 daily_backtest_data = df1.set_index("Date").copy()
 daily_backtest_data.index = pd.to_datetime(daily_backtest_data.index)
-bt_daily = Backtest(daily_backtest_data,SmaCross,cash=1000, commission=0.002,trade_on_close=True)
+bt_daily = Backtest(daily_backtest_data,EmaCrossLongOnly,cash=1000, commission=0.002,trade_on_close=True)
 bt_daily_stats = bt_daily.run()
 print("Daily backtest results:")
 print(bt_daily_stats.to_string())
 
+bt_daily_atr = Backtest(daily_backtest_data,EmaCross,cash=1000, commission=0.002,trade_on_close=True)
+bt_daily_atr_stats = bt_daily_atr.run()
+print("Daily EMA + ATR backtest results:")
+print(bt_daily_atr_stats.to_string())
+
+bt_daily_30_60 = Backtest(
+    daily_backtest_data,
+    EmaCross30_60,
+    cash=1000,
+    commission=0.002,
+    trade_on_close=True,
+)
+bt_daily_30_60_stats = bt_daily_30_60.run()
+print("Daily EMA 30/60 + ATR backtest results:")
+print(bt_daily_30_60_stats.to_string())
+
+bt_daily_long_30_60 = Backtest(
+    daily_backtest_data,
+    EmaCrossLongOnly30_60,
+    cash=1000,
+    commission=0.002,
+    trade_on_close=True,
+)
+bt_daily_long_30_60_stats = bt_daily_long_30_60.run()
+print("Daily EMA 30/60 Exit results:")
+print(bt_daily_long_30_60_stats.to_string())
+
+
+def display_trade_log(stats, title):
+    trades = stats.get("_trades")
+    if trades is None or trades.empty:
+        st.info(f"No completed trades are available for {title}.")
+        return
+
+    trade_log = trades.copy()
+    sort_columns = [
+        column for column in ("EntryTime", "ExitTime") if column in trade_log.columns
+    ]
+    if sort_columns:
+        trade_log = trade_log.sort_values(
+            by=sort_columns,
+            ascending=True,
+            kind="stable",
+        ).reset_index(drop=True)
+
+    columns = {
+        "EntryTime": "Entry Date",
+        "ExitTime": "Exit Date",
+        "Size": "Size",
+        "EntryPrice": "Entry Price",
+        "ExitPrice": "Exit Price",
+        "PnL": "P&L",
+        "ReturnPct": "Return %",
+        "EntryBar": "Entry Bar",
+        "ExitBar": "Exit Bar",
+    }
+    available_columns = [column for column in columns if column in trade_log.columns]
+    trade_log = trade_log[available_columns].rename(columns=columns)
+
+    for date_column in ("Entry Date", "Exit Date"):
+        if date_column in trade_log.columns:
+            trade_log[date_column] = pd.to_datetime(
+                trade_log[date_column], errors="coerce"
+            ).dt.strftime("%Y-%m-%d")
+    for price_column in ("Entry Price", "Exit Price", "P&L"):
+        if price_column in trade_log.columns:
+            trade_log[price_column] = trade_log[price_column].map(
+                lambda value: f"${value:,.2f}" if pd.notna(value) else "—"
+            )
+    if "Return %" in trade_log.columns:
+        trade_log["Return %"] = trade_log["Return %"].map(
+            lambda value: f"{value * 100:.2f}%" if pd.notna(value) else "—"
+        )
+    if "Size" in trade_log.columns:
+        trade_log["Size"] = trade_log["Size"].map(
+            lambda value: f"{value:,.4f}" if pd.notna(value) else "—"
+        )
+
+    st.markdown(f"### {title}")
+    st.dataframe(trade_log, width="stretch", hide_index=True)
+
+
+def display_special_objects(stats, title):
+    trades = stats.get("_trades")
+    equity_curve = stats.get("_equity_curve")
+    strategy = stats.get("_strategy")
+
+    with st.expander(f"{title} - Special Objects"):
+        st.markdown("#### `_strategy`")
+        if strategy is None:
+            st.info("Strategy object is unavailable.")
+        else:
+            strategy_info = pd.DataFrame(
+                {
+                    "Property": ["Class", "Fast Period", "Slow Period"],
+                    "Value": [
+                        strategy.__class__.__name__,
+                        getattr(strategy, "fast_period", "—"),
+                        getattr(strategy, "slow_period", "—"),
+                    ],
+                }
+            )
+            st.dataframe(strategy_info, width="stretch", hide_index=True)
+
+        st.markdown("#### `_equity_curve`")
+        if equity_curve is None or equity_curve.empty:
+            st.info("Equity curve is unavailable.")
+        else:
+            curve_columns = [
+                column
+                for column in ("Equity", "DrawdownPct")
+                if column in equity_curve.columns
+            ]
+            if curve_columns:
+                st.line_chart(equity_curve[curve_columns])
+            st.dataframe(
+                equity_curve.tail(20),
+                width="stretch",
+                hide_index=False,
+            )
+
+        st.markdown("#### `_trades`")
+        if trades is None or trades.empty:
+            st.info("Trade object is unavailable.")
+        else:
+            st.caption(f"Raw trade records: {len(trades)}")
+            st.dataframe(trades, width="stretch", hide_index=True)
+
+
 def display_backtest_stats(stats, title):
-    summary = stats.drop(labels=["_equity_curve", "_trades"], errors="ignore")
+    summary = stats.drop(
+        labels=["_strategy", "_equity_curve", "_trades"],
+        errors="ignore",
+    )
     summary = summary.rename_axis("Metric").reset_index(name="Value")
 
     def format_stat_value(metric, value):
@@ -349,7 +535,7 @@ def display_backtest_stats(stats, title):
         format_stat_value(metric, value)
         for metric, value in zip(summary["Metric"], summary["Value"])
     ]
-    st.subheader(title)
+    st.markdown(f"### {title}")
 
     key_metrics = [
         ("Start", "Start Date"),
@@ -390,55 +576,171 @@ def display_backtest_stats(stats, title):
         st.dataframe(summary, width="stretch", hide_index=True)
 
 
-display_backtest_stats(bt_daily_stats, 'Daily Backtest Results')
+def display_strategy_comparison(results, title):
+    metrics = [
+        ("Return [%]", "Return"),
+        ("Buy & Hold Return [%]", "Buy & Hold Return"),
+        ("Equity Final [$]", "Final Equity"),
+        ("CAGR [%]", "CAGR"),
+        ("Max. Drawdown [%]", "Max Drawdown"),
+        ("Sharpe Ratio", "Sharpe"),
+        ("Sortino Ratio", "Sortino"),
+        ("# Trades", "Trades"),
+        ("Win Rate [%]", "Win Rate"),
+        ("Profit Factor", "Profit Factor"),
+        ("Expectancy [%]", "Expectancy"),
+    ]
+
+    def format_comparison_value(metric, value):
+        if value is None or (
+            isinstance(value, (float, np.floating)) and np.isnan(value)
+        ):
+            return "—"
+        if metric in {"Start", "End"}:
+            return str(value).split(" ")[0]
+        if "[%]" in metric:
+            return f"{float(value):.2f}%"
+        if "[$]" in metric:
+            return f"${float(value):,.2f}"
+        if metric == "# Trades":
+            return f"{int(value):,}"
+        if isinstance(value, (int, float, np.integer, np.floating)):
+            return f"{float(value):.2f}"
+        return str(value)
+
+    comparison = {}
+    for strategy_name, stats in results.items():
+        comparison[strategy_name] = {
+            display_name: format_comparison_value(metric, stats.get(metric))
+            for metric, display_name in metrics
+        }
+
+    comparison = pd.DataFrame(comparison)
+    comparison.index.name = "Metric"
+    st.markdown(f"### {title}")
+    st.dataframe(comparison, width="stretch")
+
+
+display_backtest_stats(bt_daily_atr_stats, 'Daily - EMA10/20 + ATR Trailing Stop')
+display_trade_log(bt_daily_atr_stats, 'Daily - EMA10/20 + ATR Trailing Stop Trade Records')
+display_special_objects(bt_daily_atr_stats, 'Daily - EMA10/20 + ATR Trailing Stop')
+
+bt_daily_atr.plot(filename="EmaCrossATRDaily.html", open_browser=False)
+st.markdown('### Daily Chart - EMA10/20 + ATR Trailing Stop')
+openHTML('EmaCrossATRDaily.html')
+
+display_backtest_stats(bt_daily_stats, 'Daily - EMA10/20 + EMA Cross Exit')
+display_trade_log(bt_daily_stats, 'Daily - EMA10/20 + EMA Cross Exit Trade Records')
+display_special_objects(bt_daily_stats, 'Daily - EMA10/20 + EMA Cross Exit')
 
 #btINFO=bt.run()
 #st.write(btINFO)    
 
-bt_daily.plot(filename="SmaCross.html", open_browser=False)
-st.subheader('Daily Chart BT')  
-openHTML('SmaCross.html')
+bt_daily.plot(filename="EmaCrossLongOnly.html", open_browser=False)
+st.markdown('### Daily Chart - EMA10/20 + EMA Cross Exit')
+openHTML('EmaCrossLongOnly.html')
+
+display_backtest_stats(bt_daily_30_60_stats, 'Daily - EMA30/60 + ATR Trailing Stop')
+display_trade_log(bt_daily_30_60_stats, 'Daily - EMA30/60 + ATR Trailing Stop Trade Records')
+display_special_objects(bt_daily_30_60_stats, 'Daily - EMA30/60 + ATR Trailing Stop')
+
+bt_daily_30_60.plot(filename="EmaCross30_60ATRDaily.html", open_browser=False)
+st.markdown('### Daily Chart - EMA30/60 + ATR Trailing Stop')
+openHTML('EmaCross30_60ATRDaily.html')
+
+display_backtest_stats(bt_daily_long_30_60_stats, 'Daily - EMA30/60 + EMA Cross Exit')
+display_trade_log(bt_daily_long_30_60_stats, 'Daily - EMA30/60 + EMA Cross Exit Trade Records')
+display_special_objects(bt_daily_long_30_60_stats, 'Daily - EMA30/60 + EMA Cross Exit')
+
+bt_daily_long_30_60.plot(filename="EmaCrossLongOnly30_60Daily.html", open_browser=False)
+st.markdown('### Daily Chart - EMA30/60 + EMA Cross Exit')
+openHTML('EmaCrossLongOnly30_60Daily.html')
+
+daily_strategy_results = {
+    "EMA10/20 + ATR Trailing Stop": bt_daily_atr_stats,
+    "EMA10/20 + EMA Cross Exit": bt_daily_stats,
+    "EMA30/60 + ATR Trailing Stop": bt_daily_30_60_stats,
+    "EMA30/60 + EMA Cross Exit": bt_daily_long_30_60_stats,
+}
+display_strategy_comparison(daily_strategy_results, "Daily Strategy Comparison")
 
 #####################################################################################
 
-class SmaCross1(SignalStrategy, TrailingStrategy):
-    s1 = 10
-    s2 = 20
-    
-    def init(self):
-        super().init()
-        
-        sma1 = self.I(SMA, self.data.Close, self.s1)
-        sma2 = self.I(SMA, self.data.Close, self.s2)
-
-        # Where sma1 crosses sma2 upwards. Diff gives us [-1,0, *1*]
-        signal = (pd.Series(sma1) > sma2).astype(int).diff().fillna(0)
-        signal = signal.replace(-1, 0)  # Upwards/long only
-
-        entry_size = signal * .95
-
-        self.set_signal(entry_size = entry_size)
-        
-        self.set_atr_periods(20)
-        self.set_trailing_sl(2) #ATR stop loss (20*2)
-
-
-
-#####################################################################################
-
-bt_weekly = Backtest(weekly1, SmaCross1,cash=1000, commission=0.002,trade_on_close=True)
+bt_weekly = Backtest(weekly1, EmaCrossLongOnly,cash=1000, commission=0.002,trade_on_close=True)
 bt_weekly_stats = bt_weekly.run()
 print("Weekly backtest results:")
 print(bt_weekly_stats.to_string())
-display_backtest_stats(bt_weekly_stats, 'Weekly Backtest Results')
+
+bt_weekly_atr = Backtest(weekly1, EmaCross,cash=1000, commission=0.002,trade_on_close=True)
+bt_weekly_atr_stats = bt_weekly_atr.run()
+print("Weekly EMA + ATR backtest results:")
+print(bt_weekly_atr_stats.to_string())
+
+bt_weekly_30_60 = Backtest(
+    weekly1,
+    EmaCross30_60,
+    cash=1000,
+    commission=0.002,
+    trade_on_close=True,
+)
+bt_weekly_30_60_stats = bt_weekly_30_60.run()
+print("Weekly EMA 30/60 + ATR backtest results:")
+print(bt_weekly_30_60_stats.to_string())
+
+bt_weekly_long_30_60 = Backtest(
+    weekly1,
+    EmaCrossLongOnly30_60,
+    cash=1000,
+    commission=0.002,
+    trade_on_close=True,
+)
+bt_weekly_long_30_60_stats = bt_weekly_long_30_60.run()
+print("Weekly EMA 30/60 Exit results:")
+print(bt_weekly_long_30_60_stats.to_string())
+
+display_backtest_stats(bt_weekly_atr_stats, 'Weekly - EMA10/20 + ATR Trailing Stop')
+display_trade_log(bt_weekly_atr_stats, 'Weekly - EMA10/20 + ATR Trailing Stop Trade Records')
+display_special_objects(bt_weekly_atr_stats, 'Weekly - EMA10/20 + ATR Trailing Stop')
+
+bt_weekly_atr.plot(filename="EmaCrossATRWeekly.html", open_browser=False)
+st.markdown('### Weekly Chart - EMA10/20 + ATR Trailing Stop')
+openHTML('EmaCrossATRWeekly.html')
+
+display_backtest_stats(bt_weekly_stats, 'Weekly - EMA10/20 + EMA Cross Exit')
+display_trade_log(bt_weekly_stats, 'Weekly - EMA10/20 + EMA Cross Exit Trade Records')
+display_special_objects(bt_weekly_stats, 'Weekly - EMA10/20 + EMA Cross Exit')
 
 
-bt_weekly.plot(filename="SmaCross1.html", open_browser=False)
+bt_weekly.plot(filename="EmaCrossLongOnlyWeekly.html", open_browser=False)
 
 
 
 
 
 
-st.subheader('Weekly Chart BT')  
-openHTML('SmaCross1.html')
+st.markdown('### Weekly Chart - EMA10/20 + EMA Cross Exit')
+openHTML('EmaCrossLongOnlyWeekly.html')
+
+display_backtest_stats(bt_weekly_30_60_stats, 'Weekly - EMA30/60 + ATR Trailing Stop')
+display_trade_log(bt_weekly_30_60_stats, 'Weekly - EMA30/60 + ATR Trailing Stop Trade Records')
+display_special_objects(bt_weekly_30_60_stats, 'Weekly - EMA30/60 + ATR Trailing Stop')
+
+bt_weekly_30_60.plot(filename="EmaCross30_60ATRWeekly.html", open_browser=False)
+st.markdown('### Weekly Chart - EMA30/60 + ATR Trailing Stop')
+openHTML('EmaCross30_60ATRWeekly.html')
+
+display_backtest_stats(bt_weekly_long_30_60_stats, 'Weekly - EMA30/60 + EMA Cross Exit')
+display_trade_log(bt_weekly_long_30_60_stats, 'Weekly - EMA30/60 + EMA Cross Exit Trade Records')
+display_special_objects(bt_weekly_long_30_60_stats, 'Weekly - EMA30/60 + EMA Cross Exit')
+
+bt_weekly_long_30_60.plot(filename="EmaCrossLongOnly30_60Weekly.html", open_browser=False)
+st.markdown('### Weekly Chart - EMA30/60 + EMA Cross Exit')
+openHTML('EmaCrossLongOnly30_60Weekly.html')
+
+weekly_strategy_results = {
+    "EMA10/20 + ATR Trailing Stop": bt_weekly_atr_stats,
+    "EMA10/20 + EMA Cross Exit": bt_weekly_stats,
+    "EMA30/60 + ATR Trailing Stop": bt_weekly_30_60_stats,
+    "EMA30/60 + EMA Cross Exit": bt_weekly_long_30_60_stats,
+}
+display_strategy_comparison(weekly_strategy_results, "Weekly Strategy Comparison")
