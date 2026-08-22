@@ -59,6 +59,10 @@ st.title('Stock App')
 user_input = st.text_input('Enter Ticker','0992.hk')
 user_input_start = st.date_input('Enter Start Date',datetime.date(2019, 1, 1))
 user_input_end = st.date_input('Enter End Date',datetime.date(2026, 8, 1))
+date_range_label = (
+    f"{user_input_start.strftime('%Y-%m-%d')} to "
+    f"{user_input_end.strftime('%Y-%m-%d')}"
+)
 
 #####################################################################################
 
@@ -118,8 +122,40 @@ company_name = (
     or user_ticker
 )
 company_country = ticker_info.get("country") or "Information unavailable"
-st.subheader(company_name)
-st.caption(f"Ticker: {user_ticker}  |  Country: {company_country}")
+st.markdown(
+    f"""
+    <style>
+    .stock-company-header {{
+        position: sticky;
+        top: 0;
+        z-index: 999;
+        padding: 0.65rem 1rem;
+        margin: 0 0 1rem 0;
+        border-bottom: 1px solid rgba(128, 128, 128, 0.35);
+        border-radius: 0 0 0.5rem 0.5rem;
+        background: var(--background-color, #0e1117);
+        color: var(--text-color, #fafafa);
+    }}
+    .stock-company-name {{
+        font-size: 1.15rem;
+        font-weight: 700;
+        line-height: 1.25;
+    }}
+    .stock-company-meta {{
+        margin-top: 0.2rem;
+        font-size: 0.82rem;
+        opacity: 0.75;
+    }}
+    </style>
+    <div class="stock-company-header">
+        <div class="stock-company-name">{company_name}</div>
+        <div class="stock-company-meta">
+            {user_ticker} · {company_country} · {date_range_label}
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 
 weekly = (
@@ -173,7 +209,7 @@ def display_table(data, rows=None):
     st.dataframe(table, width="stretch", hide_index=True)
 
 
-st.subheader('Daily Market Data')
+st.markdown(f"### Daily Market Data ({date_range_label})")
 display_table(df[["Date", "Open", "High", "Low", "Close", "Volume"]], rows=10)
 
 # st.subheader('Weekly Market Data')
@@ -230,19 +266,24 @@ def plot_candlestick(data, title):
     fig.update_layout(title=title, xaxis_rangeslider_visible=False)
     return fig
 
-st.subheader('Day Chart')
-fig4 = plot_candlestick(df, user_input)
+st.markdown(f"### Daily Chart ({date_range_label})")
+fig4 = plot_candlestick(
+    df,
+    f"Daily Chart - {user_ticker} ({date_range_label})",
+)
 st.plotly_chart(fig4, key="daily_candlestick_chart")
 
 #####################################################################################
 
-st.subheader('Weekly Market Data')
+st.markdown(f"### Weekly Market Data ({date_range_label})")
 display_table(weekly, rows=10)
 
 #WEEKLY CHART
 
-st.subheader(' ')
-fig5 = plot_candlestick(weekly, user_input)
+fig5 = plot_candlestick(
+    weekly,
+    f"Weekly Chart - {user_ticker} ({date_range_label})",
+)
 st.plotly_chart(fig5, key="weekly_candlestick_chart")
 
 #####################################################################################
@@ -626,7 +667,7 @@ display_trade_log(bt_daily_atr_stats, 'Daily - EMA10/20 + ATR Trailing Stop Trad
 display_special_objects(bt_daily_atr_stats, 'Daily - EMA10/20 + ATR Trailing Stop')
 
 bt_daily_atr.plot(filename="EmaCrossATRDaily.html", open_browser=False)
-st.markdown('### Daily Chart - EMA10/20 + ATR Trailing Stop')
+st.markdown(f'### Daily Chart - EMA10/20 + ATR Trailing Stop ({date_range_label})')
 openHTML('EmaCrossATRDaily.html')
 
 display_backtest_stats(bt_daily_stats, 'Daily - EMA10/20 + EMA Cross Exit')
@@ -637,7 +678,7 @@ display_special_objects(bt_daily_stats, 'Daily - EMA10/20 + EMA Cross Exit')
 #st.write(btINFO)    
 
 bt_daily.plot(filename="EmaCrossLongOnly.html", open_browser=False)
-st.markdown('### Daily Chart - EMA10/20 + EMA Cross Exit')
+st.markdown(f'### Daily Chart - EMA10/20 + EMA Cross Exit ({date_range_label})')
 openHTML('EmaCrossLongOnly.html')
 
 display_backtest_stats(bt_daily_30_60_stats, 'Daily - EMA30/60 + ATR Trailing Stop')
@@ -645,7 +686,7 @@ display_trade_log(bt_daily_30_60_stats, 'Daily - EMA30/60 + ATR Trailing Stop Tr
 display_special_objects(bt_daily_30_60_stats, 'Daily - EMA30/60 + ATR Trailing Stop')
 
 bt_daily_30_60.plot(filename="EmaCross30_60ATRDaily.html", open_browser=False)
-st.markdown('### Daily Chart - EMA30/60 + ATR Trailing Stop')
+st.markdown(f'### Daily Chart - EMA30/60 + ATR Trailing Stop ({date_range_label})')
 openHTML('EmaCross30_60ATRDaily.html')
 
 display_backtest_stats(bt_daily_long_30_60_stats, 'Daily - EMA30/60 + EMA Cross Exit')
@@ -653,7 +694,7 @@ display_trade_log(bt_daily_long_30_60_stats, 'Daily - EMA30/60 + EMA Cross Exit 
 display_special_objects(bt_daily_long_30_60_stats, 'Daily - EMA30/60 + EMA Cross Exit')
 
 bt_daily_long_30_60.plot(filename="EmaCrossLongOnly30_60Daily.html", open_browser=False)
-st.markdown('### Daily Chart - EMA30/60 + EMA Cross Exit')
+st.markdown(f'### Daily Chart - EMA30/60 + EMA Cross Exit ({date_range_label})')
 openHTML('EmaCrossLongOnly30_60Daily.html')
 
 daily_strategy_results = {
@@ -703,7 +744,7 @@ display_trade_log(bt_weekly_atr_stats, 'Weekly - EMA10/20 + ATR Trailing Stop Tr
 display_special_objects(bt_weekly_atr_stats, 'Weekly - EMA10/20 + ATR Trailing Stop')
 
 bt_weekly_atr.plot(filename="EmaCrossATRWeekly.html", open_browser=False)
-st.markdown('### Weekly Chart - EMA10/20 + ATR Trailing Stop')
+st.markdown(f'### Weekly Chart - EMA10/20 + ATR Trailing Stop ({date_range_label})')
 openHTML('EmaCrossATRWeekly.html')
 
 display_backtest_stats(bt_weekly_stats, 'Weekly - EMA10/20 + EMA Cross Exit')
@@ -718,7 +759,7 @@ bt_weekly.plot(filename="EmaCrossLongOnlyWeekly.html", open_browser=False)
 
 
 
-st.markdown('### Weekly Chart - EMA10/20 + EMA Cross Exit')
+st.markdown(f'### Weekly Chart - EMA10/20 + EMA Cross Exit ({date_range_label})')
 openHTML('EmaCrossLongOnlyWeekly.html')
 
 display_backtest_stats(bt_weekly_30_60_stats, 'Weekly - EMA30/60 + ATR Trailing Stop')
@@ -726,7 +767,7 @@ display_trade_log(bt_weekly_30_60_stats, 'Weekly - EMA30/60 + ATR Trailing Stop 
 display_special_objects(bt_weekly_30_60_stats, 'Weekly - EMA30/60 + ATR Trailing Stop')
 
 bt_weekly_30_60.plot(filename="EmaCross30_60ATRWeekly.html", open_browser=False)
-st.markdown('### Weekly Chart - EMA30/60 + ATR Trailing Stop')
+st.markdown(f'### Weekly Chart - EMA30/60 + ATR Trailing Stop ({date_range_label})')
 openHTML('EmaCross30_60ATRWeekly.html')
 
 display_backtest_stats(bt_weekly_long_30_60_stats, 'Weekly - EMA30/60 + EMA Cross Exit')
@@ -734,7 +775,7 @@ display_trade_log(bt_weekly_long_30_60_stats, 'Weekly - EMA30/60 + EMA Cross Exi
 display_special_objects(bt_weekly_long_30_60_stats, 'Weekly - EMA30/60 + EMA Cross Exit')
 
 bt_weekly_long_30_60.plot(filename="EmaCrossLongOnly30_60Weekly.html", open_browser=False)
-st.markdown('### Weekly Chart - EMA30/60 + EMA Cross Exit')
+st.markdown(f'### Weekly Chart - EMA30/60 + EMA Cross Exit ({date_range_label})')
 openHTML('EmaCrossLongOnly30_60Weekly.html')
 
 weekly_strategy_results = {
