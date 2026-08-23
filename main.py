@@ -10,7 +10,8 @@ import datetime
 #import mplfinance as mpf
 #from mpl_finance import candlestick_ohlc
 import yfinance
-from urllib.parse import quote
+from html import escape
+from urllib.parse import quote, urlparse
 #import matplotlib.dates as mpl_dates
 ##from fbprophet import Prophet
 import streamlit as st
@@ -57,7 +58,7 @@ def EMA(values, period):
 st.markdown("<div style='height: 3.75rem;'></div>", unsafe_allow_html=True)
 st.title('Stock App')
 
-ticker_options = ["GC=F", "CL=F", "BTC-USD", "VOO", "^HSI", "^KLSE"]
+ticker_options = ["1155.KL", "GC=F", "CL=F", "BTC-USD", "VOO", "^HSI", "^KLSE"]
 ticker_from_url = st.query_params.get("ticker", "")
 if (
     ticker_from_url
@@ -69,8 +70,7 @@ if (
 user_input = st.selectbox(
     "Enter Ticker",
     options=ticker_options,
-    index=None,
-    placeholder="Choose or type a ticker",
+    index=0,
     accept_new_options=True,
     help="Choose a listed ticker or type any Yahoo Finance symbol.",
     key="ticker_selector",
@@ -82,15 +82,15 @@ date_range_label = (
     f"{user_input_end.strftime('%Y-%m-%d')}"
 )
 
-backtest_view = st.query_params.get("view", "Summary")
+backtest_view = st.query_params.get("view", "Daily")
 if backtest_view not in {"Summary", "Daily", "Weekly"}:
-    backtest_view = "Summary"
+    backtest_view = "Daily"
 
 #####################################################################################
 
 user_ticker = (user_input or "").strip().upper()
 if not user_ticker:
-    st.info("Choose or type a ticker symbol to begin, for example AAPL or 1113.HK.")
+    st.info("Choose or type a ticker symbol to begin, for example aapl or 1113.hk or 1155.kl.")
     st.stop()
 
 try:
@@ -144,6 +144,26 @@ company_name = (
     or user_ticker
 )
 company_country = ticker_info.get("country") or "Information unavailable"
+company_logo_url = ticker_info.get("logo_url")
+company_website = ticker_info.get("website") or ""
+if not company_logo_url and company_website:
+    company_domain = urlparse(str(company_website)).netloc
+    if company_domain:
+        company_logo_url = (
+            "https://www.google.com/s2/favicons?domain="
+            f"{quote(company_domain, safe='')}&sz=128"
+        )
+company_logo_html = '<span class="stock-company-logo-fallback" aria-hidden="true">↗</span>'
+if company_logo_url:
+    company_logo_html = (
+        f'<img class="stock-company-logo" '
+        f'src="{escape(str(company_logo_url), quote=True)}" '
+        f'alt="{escape(str(company_name), quote=True)} logo" '
+        'onerror="this.remove()">'
+    )
+display_company_name = escape(str(company_name))
+display_company_country = escape(str(company_country))
+display_ticker = escape(str(user_ticker))
 ticker_url_value = quote(user_ticker, safe="")
 summary_button_class = "active" if backtest_view == "Summary" else ""
 daily_button_class = "active" if backtest_view == "Daily" else ""
@@ -173,6 +193,35 @@ st.markdown(
     }}
     .stock-company-details {{
         min-width: 0;
+    }}
+    .stock-company-identity {{
+        display: flex;
+        align-items: center;
+        gap: 0.7rem;
+        min-width: 0;
+    }}
+    .stock-company-logo {{
+        width: 42px;
+        height: 42px;
+        flex-shrink: 0;
+        border-radius: 8px;
+        background: #ffffff;
+        object-fit: contain;
+        padding: 3px;
+    }}
+    .stock-company-logo-fallback {{
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 42px;
+        height: 42px;
+        flex-shrink: 0;
+        border: 1px solid rgba(250, 250, 250, 0.35);
+        border-radius: 8px;
+        background: #1f2937;
+        color: #60a5fa;
+        font-size: 1.45rem;
+        font-weight: 700;
     }}
     .stock-company-name {{
         font-size: 1.15rem;
@@ -219,10 +268,13 @@ st.markdown(
     </style>
     <div class="stock-company-header">
         <div class="stock-company-header-inner">
-            <div class="stock-company-details">
-                <div class="stock-company-name">{company_name}</div>
-                <div class="stock-company-meta">
-                    {user_ticker} · {company_country} · {date_range_label}
+            <div class="stock-company-identity">
+                {company_logo_html}
+                <div class="stock-company-details">
+                    <div class="stock-company-name">{display_company_name}</div>
+                    <div class="stock-company-meta">
+                        {display_ticker} · {display_company_country} · {date_range_label}
+                    </div>
                 </div>
             </div>
             <div class="stock-view-switcher">
@@ -536,6 +588,64 @@ print("Daily EMA 30/60 Exit results:")
 print(bt_daily_long_30_60_stats.to_string())
 
 
+strategy_colors = {
+    "Short-Term Trend + ATR Stop": "#3B82F6",
+    "Long-Term Trend + ATR Stop": "#A855F7",
+    "Short-Term Trend + EMA Exit": "#22C55E",
+    "Long-Term Trend + EMA Exit": "#F97316",
+}
+
+
+def get_strategy_color(title):
+    for strategy_name, color in strategy_colors.items():
+        if strategy_name in title:
+            return color
+    return None
+
+
+def display_colored_heading(title):
+    color = get_strategy_color(title)
+    if color is None:
+        st.markdown(f"### {title}")
+        return
+
+    st.markdown(
+        f"""
+        <div style="
+            border-left: 6px solid {color};
+            margin: 1.25rem 0 0.55rem 0;
+            padding: 0.25rem 0 0.25rem 0.75rem;
+            font-size: 1.45rem;
+            font-weight: 700;
+            line-height: 1.25;
+        ">
+            {title}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def display_strategy_legend():
+    legend_items = "".join(
+        f"""
+        <span style="
+            display: inline-block;
+            margin: 0 0.45rem 0.45rem 0;
+            padding: 0.35rem 0.6rem;
+            border-radius: 0.4rem;
+            border: 1px solid {color};
+            color: {color};
+            font-size: 0.82rem;
+            font-weight: 600;
+        ">{strategy_name}</span>
+        """
+        for strategy_name, color in strategy_colors.items()
+    )
+    st.markdown("#### Strategy Colour Guide")
+    st.markdown(legend_items, unsafe_allow_html=True)
+
+
 def display_trade_log(stats, title):
     trades = stats.get("_trades")
     if trades is None or trades.empty:
@@ -625,18 +735,38 @@ def display_trade_log(stats, title):
             )
         )
 
-    st.markdown(f"### {title}")
+    display_colored_heading(title)
     st.dataframe(trade_log, width="stretch", hide_index=True)
 
 
 def display_special_objects(stats, title):
     equity_curve = stats.get("_equity_curve")
-    st.markdown(f"### {title} Equity Curve")
+    display_colored_heading(f"{title} Equity Curve")
     if equity_curve is None or equity_curve.empty or "Equity" not in equity_curve:
         st.info("Equity curve is unavailable.")
         return
 
     st.line_chart(equity_curve[["Equity"]])
+
+strategy_descriptions = {
+    "Short-Term Trend + ATR Stop": (
+        "Entry: EMA 10 crosses above EMA 20. "
+        "Exit: 2 × ATR(20) trailing stop. Long-only."
+    ),
+    "Long-Term Trend + ATR Stop": (
+        "Entry: EMA 30 crosses above EMA 60. "
+        "Exit: 2 × ATR(20) trailing stop. Long-only."
+    ),
+    "Short-Term Trend + EMA Exit": (
+        "Entry: EMA 10 crosses above EMA 20. "
+        "Exit: EMA 10 crosses below EMA 20. Long-only."
+    ),
+    "Long-Term Trend + EMA Exit": (
+        "Entry: EMA 30 crosses above EMA 60. "
+        "Exit: EMA 30 crosses below EMA 60. Long-only."
+    ),
+}
+
 
 def display_backtest_stats(stats, title):
     summary = stats.drop(
@@ -664,7 +794,8 @@ def display_backtest_stats(stats, title):
         format_stat_value(metric, value)
         for metric, value in zip(summary["Metric"], summary["Value"])
     ]
-    st.markdown(f"### {title}")
+    display_colored_heading(title)
+    st.caption(strategy_descriptions.get(title, ""))
 
     key_metrics = [
         ("Start", "Start Date"),
@@ -789,32 +920,33 @@ def display_summary_highlights(results, title):
 
 
 if backtest_view == "Daily":
+    display_strategy_legend()
     display_backtest_stats(bt_daily_atr_stats, "Short-Term Trend + ATR Stop")
     display_trade_log(bt_daily_atr_stats, "Short-Term Trend + ATR Stop Trade Records")
     display_special_objects(bt_daily_atr_stats, "Short-Term Trend + ATR Stop")
     bt_daily_atr.plot(filename="EmaCrossATRDaily.html", open_browser=False)
-    st.markdown(f"### Daily Chart - Short-Term Trend + ATR Stop ({date_range_label})")
+    display_colored_heading(f"Daily Chart - Short-Term Trend + ATR Stop ({date_range_label})")
     openHTML("EmaCrossATRDaily.html")
 
     display_backtest_stats(bt_daily_30_60_stats, "Long-Term Trend + ATR Stop")
     display_trade_log(bt_daily_30_60_stats, "Long-Term Trend + ATR Stop Trade Records")
     display_special_objects(bt_daily_30_60_stats, "Long-Term Trend + ATR Stop")
     bt_daily_30_60.plot(filename="EmaCross30_60ATRDaily.html", open_browser=False)
-    st.markdown(f"### Daily Chart - Long-Term Trend + ATR Stop ({date_range_label})")
+    display_colored_heading(f"Daily Chart - Long-Term Trend + ATR Stop ({date_range_label})")
     openHTML("EmaCross30_60ATRDaily.html")
 
     display_backtest_stats(bt_daily_stats, "Short-Term Trend + EMA Exit")
     display_trade_log(bt_daily_stats, "Short-Term Trend + EMA Exit Trade Records")
     display_special_objects(bt_daily_stats, "Short-Term Trend + EMA Exit")
     bt_daily.plot(filename="EmaCrossLongOnly.html", open_browser=False)
-    st.markdown(f"### Daily Chart - Short-Term Trend + EMA Exit ({date_range_label})")
+    display_colored_heading(f"Daily Chart - Short-Term Trend + EMA Exit ({date_range_label})")
     openHTML("EmaCrossLongOnly.html")
 
     display_backtest_stats(bt_daily_long_30_60_stats, "Long-Term Trend + EMA Exit")
     display_trade_log(bt_daily_long_30_60_stats, "Long-Term Trend + EMA Exit Trade Records")
     display_special_objects(bt_daily_long_30_60_stats, "Long-Term Trend + EMA Exit")
     bt_daily_long_30_60.plot(filename="EmaCrossLongOnly30_60Daily.html", open_browser=False)
-    st.markdown(f"### Daily Chart - Long-Term Trend + EMA Exit ({date_range_label})")
+    display_colored_heading(f"Daily Chart - Long-Term Trend + EMA Exit ({date_range_label})")
     openHTML("EmaCrossLongOnly30_60Daily.html")
 
     daily_strategy_results = {
@@ -860,32 +992,33 @@ print("Weekly EMA 30/60 Exit results:")
 print(bt_weekly_long_30_60_stats.to_string())
 
 if backtest_view == "Weekly":
+    display_strategy_legend()
     display_backtest_stats(bt_weekly_atr_stats, "Short-Term Trend + ATR Stop")
     display_trade_log(bt_weekly_atr_stats, "Short-Term Trend + ATR Stop Trade Records")
     display_special_objects(bt_weekly_atr_stats, "Short-Term Trend + ATR Stop")
     bt_weekly_atr.plot(filename="EmaCrossATRWeekly.html", open_browser=False)
-    st.markdown(f"### Weekly Chart - Short-Term Trend + ATR Stop ({date_range_label})")
+    display_colored_heading(f"Weekly Chart - Short-Term Trend + ATR Stop ({date_range_label})")
     openHTML("EmaCrossATRWeekly.html")
 
     display_backtest_stats(bt_weekly_30_60_stats, "Long-Term Trend + ATR Stop")
     display_trade_log(bt_weekly_30_60_stats, "Long-Term Trend + ATR Stop Trade Records")
     display_special_objects(bt_weekly_30_60_stats, "Long-Term Trend + ATR Stop")
     bt_weekly_30_60.plot(filename="EmaCross30_60ATRWeekly.html", open_browser=False)
-    st.markdown(f"### Weekly Chart - Long-Term Trend + ATR Stop ({date_range_label})")
+    display_colored_heading(f"Weekly Chart - Long-Term Trend + ATR Stop ({date_range_label})")
     openHTML("EmaCross30_60ATRWeekly.html")
 
     display_backtest_stats(bt_weekly_stats, "Short-Term Trend + EMA Exit")
     display_trade_log(bt_weekly_stats, "Short-Term Trend + EMA Exit Trade Records")
     display_special_objects(bt_weekly_stats, "Short-Term Trend + EMA Exit")
     bt_weekly.plot(filename="EmaCrossLongOnlyWeekly.html", open_browser=False)
-    st.markdown(f"### Weekly Chart - Short-Term Trend + EMA Exit ({date_range_label})")
+    display_colored_heading(f"Weekly Chart - Short-Term Trend + EMA Exit ({date_range_label})")
     openHTML("EmaCrossLongOnlyWeekly.html")
 
     display_backtest_stats(bt_weekly_long_30_60_stats, "Long-Term Trend + EMA Exit")
     display_trade_log(bt_weekly_long_30_60_stats, "Long-Term Trend + EMA Exit Trade Records")
     display_special_objects(bt_weekly_long_30_60_stats, "Long-Term Trend + EMA Exit")
     bt_weekly_long_30_60.plot(filename="EmaCrossLongOnly30_60Weekly.html", open_browser=False)
-    st.markdown(f"### Weekly Chart - Long-Term Trend + EMA Exit ({date_range_label})")
+    display_colored_heading(f"Weekly Chart - Long-Term Trend + EMA Exit ({date_range_label})")
     openHTML("EmaCrossLongOnly30_60Weekly.html")
 
     weekly_strategy_results = {
