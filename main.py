@@ -126,15 +126,18 @@ st.markdown(
     f"""
     <style>
     .stock-company-header {{
-        position: sticky;
-        top: 0;
-        z-index: 999;
-        padding: 0.65rem 1rem;
-        margin: 0 0 1rem 0;
+        position: fixed;
+        top: 3.25rem;
+        left: 0;
+        z-index: 999999;
+        box-sizing: border-box;
+        width: 100%;
+        padding: 0.6rem max(1rem, calc((100vw - 76rem) / 2));
         border-bottom: 1px solid rgba(128, 128, 128, 0.35);
-        border-radius: 0 0 0.5rem 0.5rem;
-        background: var(--background-color, #0e1117);
-        color: var(--text-color, #fafafa);
+        background: rgba(14, 17, 23, 0.96);
+        color: #fafafa;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+        backdrop-filter: blur(8px);
     }}
     .stock-company-name {{
         font-size: 1.15rem;
@@ -146,6 +149,9 @@ st.markdown(
         font-size: 0.82rem;
         opacity: 0.75;
     }}
+    .stock-company-header-spacer {{
+        height: 3.75rem;
+    }}
     </style>
     <div class="stock-company-header">
         <div class="stock-company-name">{company_name}</div>
@@ -153,6 +159,7 @@ st.markdown(
             {user_ticker} · {company_country} · {date_range_label}
         </div>
     </div>
+    <div class="stock-company-header-spacer"></div>
     """,
     unsafe_allow_html=True,
 )
@@ -266,7 +273,7 @@ def plot_candlestick(data, title):
     fig.update_layout(title=title, xaxis_rangeslider_visible=False)
     return fig
 
-st.markdown(f"### Daily Chart ({date_range_label})")
+#st.markdown(f"### Daily Chart ({date_range_label})")
 fig4 = plot_candlestick(
     df,
     f"Daily Chart - {user_ticker} ({date_range_label})",
@@ -279,7 +286,7 @@ st.markdown(f"### Weekly Market Data ({date_range_label})")
 display_table(weekly, rows=10)
 
 #WEEKLY CHART
-
+#st.markdown(f"### Weekly Chart ({date_range_label})")
 fig5 = plot_candlestick(
     weekly,
     f"Weekly Chart - {user_ticker} ({date_range_label})",
@@ -466,26 +473,59 @@ def display_trade_log(stats, title):
             kind="stable",
         ).reset_index(drop=True)
 
-    columns = {
+    column_labels = {
         "EntryTime": "Entry Date",
         "ExitTime": "Exit Date",
         "Size": "Size",
-        "EntryPrice": "Entry Price",
-        "ExitPrice": "Exit Price",
-        "PnL": "P&L",
-        "ReturnPct": "Return %",
         "EntryBar": "Entry Bar",
         "ExitBar": "Exit Bar",
+        "EntryPrice": "Entry Price",
+        "ExitPrice": "Exit Price",
+        "SL": "Stop Loss",
+        "TP": "Take Profit",
+        "PnL": "P&L",
+        "Commission": "Commission",
+        "ReturnPct": "Return %",
+        "Duration": "Duration",
+        "Tag": "Tag",
     }
-    available_columns = [column for column in columns if column in trade_log.columns]
-    trade_log = trade_log[available_columns].rename(columns=columns)
+    preferred_columns = [
+        "EntryTime",
+        "ExitTime",
+        "Size",
+        "EntryBar",
+        "ExitBar",
+        "EntryPrice",
+        "ExitPrice",
+        "SL",
+        "TP",
+        "PnL",
+        "Commission",
+        "ReturnPct",
+        "Duration",
+        "Tag",
+    ]
+    ordered_columns = [
+        column for column in preferred_columns if column in trade_log.columns
+    ]
+    ordered_columns.extend(
+        column for column in trade_log.columns if column not in ordered_columns
+    )
+    trade_log = trade_log[ordered_columns].rename(columns=column_labels)
 
     for date_column in ("Entry Date", "Exit Date"):
         if date_column in trade_log.columns:
             trade_log[date_column] = pd.to_datetime(
                 trade_log[date_column], errors="coerce"
             ).dt.strftime("%Y-%m-%d")
-    for price_column in ("Entry Price", "Exit Price", "P&L"):
+    for price_column in (
+        "Entry Price",
+        "Exit Price",
+        "Stop Loss",
+        "Take Profit",
+        "P&L",
+        "Commission",
+    ):
         if price_column in trade_log.columns:
             trade_log[price_column] = trade_log[price_column].map(
                 lambda value: f"${value:,.2f}" if pd.notna(value) else "—"
@@ -496,7 +536,13 @@ def display_trade_log(stats, title):
         )
     if "Size" in trade_log.columns:
         trade_log["Size"] = trade_log["Size"].map(
-            lambda value: f"{value:,.4f}" if pd.notna(value) else "—"
+            lambda value: (
+                f"{value:,.0f}"
+                if pd.notna(value) and float(value).is_integer()
+                else f"{value:,.4f}"
+                if pd.notna(value)
+                else "—"
+            )
         )
 
     st.markdown(f"### {title}")
@@ -504,51 +550,13 @@ def display_trade_log(stats, title):
 
 
 def display_special_objects(stats, title):
-    trades = stats.get("_trades")
     equity_curve = stats.get("_equity_curve")
-    strategy = stats.get("_strategy")
+    st.markdown(f"### {title} Equity Curve")
+    if equity_curve is None or equity_curve.empty or "Equity" not in equity_curve:
+        st.info("Equity curve is unavailable.")
+        return
 
-    with st.expander(f"{title} - Special Objects"):
-        st.markdown("#### `_strategy`")
-        if strategy is None:
-            st.info("Strategy object is unavailable.")
-        else:
-            strategy_info = pd.DataFrame(
-                {
-                    "Property": ["Class", "Fast Period", "Slow Period"],
-                    "Value": [
-                        strategy.__class__.__name__,
-                        getattr(strategy, "fast_period", "—"),
-                        getattr(strategy, "slow_period", "—"),
-                    ],
-                }
-            )
-            st.dataframe(strategy_info, width="stretch", hide_index=True)
-
-        st.markdown("#### `_equity_curve`")
-        if equity_curve is None or equity_curve.empty:
-            st.info("Equity curve is unavailable.")
-        else:
-            curve_columns = [
-                column
-                for column in ("Equity", "DrawdownPct")
-                if column in equity_curve.columns
-            ]
-            if curve_columns:
-                st.line_chart(equity_curve[curve_columns])
-            st.dataframe(
-                equity_curve.tail(20),
-                width="stretch",
-                hide_index=False,
-            )
-
-        st.markdown("#### `_trades`")
-        if trades is None or trades.empty:
-            st.info("Trade object is unavailable.")
-        else:
-            st.caption(f"Raw trade records: {len(trades)}")
-            st.dataframe(trades, width="stretch", hide_index=True)
-
+    st.line_chart(equity_curve[["Equity"]])
 
 def display_backtest_stats(stats, title):
     summary = stats.drop(
@@ -662,48 +670,44 @@ def display_strategy_comparison(results, title):
     st.dataframe(comparison, width="stretch")
 
 
-display_backtest_stats(bt_daily_atr_stats, 'Daily - EMA10/20 + ATR Trailing Stop')
-display_trade_log(bt_daily_atr_stats, 'Daily - EMA10/20 + ATR Trailing Stop Trade Records')
-display_special_objects(bt_daily_atr_stats, 'Daily - EMA10/20 + ATR Trailing Stop')
+daily_tab, weekly_tab = st.tabs(["Daily", "Weekly"])
 
-bt_daily_atr.plot(filename="EmaCrossATRDaily.html", open_browser=False)
-st.markdown(f'### Daily Chart - EMA10/20 + ATR Trailing Stop ({date_range_label})')
-openHTML('EmaCrossATRDaily.html')
+with daily_tab:
+    display_backtest_stats(bt_daily_atr_stats, "Short-Term Trend + ATR Stop")
+    display_trade_log(bt_daily_atr_stats, "Short-Term Trend + ATR Stop Trade Records")
+    display_special_objects(bt_daily_atr_stats, "Short-Term Trend + ATR Stop")
+    bt_daily_atr.plot(filename="EmaCrossATRDaily.html", open_browser=False)
+    st.markdown(f"### Daily Chart - Short-Term Trend + ATR Stop ({date_range_label})")
+    openHTML("EmaCrossATRDaily.html")
 
-display_backtest_stats(bt_daily_stats, 'Daily - EMA10/20 + EMA Cross Exit')
-display_trade_log(bt_daily_stats, 'Daily - EMA10/20 + EMA Cross Exit Trade Records')
-display_special_objects(bt_daily_stats, 'Daily - EMA10/20 + EMA Cross Exit')
+    display_backtest_stats(bt_daily_30_60_stats, "Long-Term Trend + ATR Stop")
+    display_trade_log(bt_daily_30_60_stats, "Long-Term Trend + ATR Stop Trade Records")
+    display_special_objects(bt_daily_30_60_stats, "Long-Term Trend + ATR Stop")
+    bt_daily_30_60.plot(filename="EmaCross30_60ATRDaily.html", open_browser=False)
+    st.markdown(f"### Daily Chart - Long-Term Trend + ATR Stop ({date_range_label})")
+    openHTML("EmaCross30_60ATRDaily.html")
 
-#btINFO=bt.run()
-#st.write(btINFO)    
+    display_backtest_stats(bt_daily_stats, "Short-Term Trend + EMA Exit")
+    display_trade_log(bt_daily_stats, "Short-Term Trend + EMA Exit Trade Records")
+    display_special_objects(bt_daily_stats, "Short-Term Trend + EMA Exit")
+    bt_daily.plot(filename="EmaCrossLongOnly.html", open_browser=False)
+    st.markdown(f"### Daily Chart - Short-Term Trend + EMA Exit ({date_range_label})")
+    openHTML("EmaCrossLongOnly.html")
 
-bt_daily.plot(filename="EmaCrossLongOnly.html", open_browser=False)
-st.markdown(f'### Daily Chart - EMA10/20 + EMA Cross Exit ({date_range_label})')
-openHTML('EmaCrossLongOnly.html')
+    display_backtest_stats(bt_daily_long_30_60_stats, "Long-Term Trend + EMA Exit")
+    display_trade_log(bt_daily_long_30_60_stats, "Long-Term Trend + EMA Exit Trade Records")
+    display_special_objects(bt_daily_long_30_60_stats, "Long-Term Trend + EMA Exit")
+    bt_daily_long_30_60.plot(filename="EmaCrossLongOnly30_60Daily.html", open_browser=False)
+    st.markdown(f"### Daily Chart - Long-Term Trend + EMA Exit ({date_range_label})")
+    openHTML("EmaCrossLongOnly30_60Daily.html")
 
-display_backtest_stats(bt_daily_30_60_stats, 'Daily - EMA30/60 + ATR Trailing Stop')
-display_trade_log(bt_daily_30_60_stats, 'Daily - EMA30/60 + ATR Trailing Stop Trade Records')
-display_special_objects(bt_daily_30_60_stats, 'Daily - EMA30/60 + ATR Trailing Stop')
-
-bt_daily_30_60.plot(filename="EmaCross30_60ATRDaily.html", open_browser=False)
-st.markdown(f'### Daily Chart - EMA30/60 + ATR Trailing Stop ({date_range_label})')
-openHTML('EmaCross30_60ATRDaily.html')
-
-display_backtest_stats(bt_daily_long_30_60_stats, 'Daily - EMA30/60 + EMA Cross Exit')
-display_trade_log(bt_daily_long_30_60_stats, 'Daily - EMA30/60 + EMA Cross Exit Trade Records')
-display_special_objects(bt_daily_long_30_60_stats, 'Daily - EMA30/60 + EMA Cross Exit')
-
-bt_daily_long_30_60.plot(filename="EmaCrossLongOnly30_60Daily.html", open_browser=False)
-st.markdown(f'### Daily Chart - EMA30/60 + EMA Cross Exit ({date_range_label})')
-openHTML('EmaCrossLongOnly30_60Daily.html')
-
-daily_strategy_results = {
-    "EMA10/20 + ATR Trailing Stop": bt_daily_atr_stats,
-    "EMA10/20 + EMA Cross Exit": bt_daily_stats,
-    "EMA30/60 + ATR Trailing Stop": bt_daily_30_60_stats,
-    "EMA30/60 + EMA Cross Exit": bt_daily_long_30_60_stats,
-}
-display_strategy_comparison(daily_strategy_results, "Daily Strategy Comparison")
+    daily_strategy_results = {
+        "Short-Term Trend + ATR Stop": bt_daily_atr_stats,
+        "Long-Term Trend + ATR Stop": bt_daily_30_60_stats,
+        "Short-Term Trend + EMA Exit": bt_daily_stats,
+        "Long-Term Trend + EMA Exit": bt_daily_long_30_60_stats,
+    }
+    display_strategy_comparison(daily_strategy_results, "Daily Strategy Comparison")
 
 #####################################################################################
 
@@ -739,49 +743,39 @@ bt_weekly_long_30_60_stats = bt_weekly_long_30_60.run()
 print("Weekly EMA 30/60 Exit results:")
 print(bt_weekly_long_30_60_stats.to_string())
 
-display_backtest_stats(bt_weekly_atr_stats, 'Weekly - EMA10/20 + ATR Trailing Stop')
-display_trade_log(bt_weekly_atr_stats, 'Weekly - EMA10/20 + ATR Trailing Stop Trade Records')
-display_special_objects(bt_weekly_atr_stats, 'Weekly - EMA10/20 + ATR Trailing Stop')
+with weekly_tab:
+    display_backtest_stats(bt_weekly_atr_stats, "Short-Term Trend + ATR Stop")
+    display_trade_log(bt_weekly_atr_stats, "Short-Term Trend + ATR Stop Trade Records")
+    display_special_objects(bt_weekly_atr_stats, "Short-Term Trend + ATR Stop")
+    bt_weekly_atr.plot(filename="EmaCrossATRWeekly.html", open_browser=False)
+    st.markdown(f"### Weekly Chart - Short-Term Trend + ATR Stop ({date_range_label})")
+    openHTML("EmaCrossATRWeekly.html")
 
-bt_weekly_atr.plot(filename="EmaCrossATRWeekly.html", open_browser=False)
-st.markdown(f'### Weekly Chart - EMA10/20 + ATR Trailing Stop ({date_range_label})')
-openHTML('EmaCrossATRWeekly.html')
+    display_backtest_stats(bt_weekly_30_60_stats, "Long-Term Trend + ATR Stop")
+    display_trade_log(bt_weekly_30_60_stats, "Long-Term Trend + ATR Stop Trade Records")
+    display_special_objects(bt_weekly_30_60_stats, "Long-Term Trend + ATR Stop")
+    bt_weekly_30_60.plot(filename="EmaCross30_60ATRWeekly.html", open_browser=False)
+    st.markdown(f"### Weekly Chart - Long-Term Trend + ATR Stop ({date_range_label})")
+    openHTML("EmaCross30_60ATRWeekly.html")
 
-display_backtest_stats(bt_weekly_stats, 'Weekly - EMA10/20 + EMA Cross Exit')
-display_trade_log(bt_weekly_stats, 'Weekly - EMA10/20 + EMA Cross Exit Trade Records')
-display_special_objects(bt_weekly_stats, 'Weekly - EMA10/20 + EMA Cross Exit')
+    display_backtest_stats(bt_weekly_stats, "Short-Term Trend + EMA Exit")
+    display_trade_log(bt_weekly_stats, "Short-Term Trend + EMA Exit Trade Records")
+    display_special_objects(bt_weekly_stats, "Short-Term Trend + EMA Exit")
+    bt_weekly.plot(filename="EmaCrossLongOnlyWeekly.html", open_browser=False)
+    st.markdown(f"### Weekly Chart - Short-Term Trend + EMA Exit ({date_range_label})")
+    openHTML("EmaCrossLongOnlyWeekly.html")
 
+    display_backtest_stats(bt_weekly_long_30_60_stats, "Long-Term Trend + EMA Exit")
+    display_trade_log(bt_weekly_long_30_60_stats, "Long-Term Trend + EMA Exit Trade Records")
+    display_special_objects(bt_weekly_long_30_60_stats, "Long-Term Trend + EMA Exit")
+    bt_weekly_long_30_60.plot(filename="EmaCrossLongOnly30_60Weekly.html", open_browser=False)
+    st.markdown(f"### Weekly Chart - Long-Term Trend + EMA Exit ({date_range_label})")
+    openHTML("EmaCrossLongOnly30_60Weekly.html")
 
-bt_weekly.plot(filename="EmaCrossLongOnlyWeekly.html", open_browser=False)
-
-
-
-
-
-
-st.markdown(f'### Weekly Chart - EMA10/20 + EMA Cross Exit ({date_range_label})')
-openHTML('EmaCrossLongOnlyWeekly.html')
-
-display_backtest_stats(bt_weekly_30_60_stats, 'Weekly - EMA30/60 + ATR Trailing Stop')
-display_trade_log(bt_weekly_30_60_stats, 'Weekly - EMA30/60 + ATR Trailing Stop Trade Records')
-display_special_objects(bt_weekly_30_60_stats, 'Weekly - EMA30/60 + ATR Trailing Stop')
-
-bt_weekly_30_60.plot(filename="EmaCross30_60ATRWeekly.html", open_browser=False)
-st.markdown(f'### Weekly Chart - EMA30/60 + ATR Trailing Stop ({date_range_label})')
-openHTML('EmaCross30_60ATRWeekly.html')
-
-display_backtest_stats(bt_weekly_long_30_60_stats, 'Weekly - EMA30/60 + EMA Cross Exit')
-display_trade_log(bt_weekly_long_30_60_stats, 'Weekly - EMA30/60 + EMA Cross Exit Trade Records')
-display_special_objects(bt_weekly_long_30_60_stats, 'Weekly - EMA30/60 + EMA Cross Exit')
-
-bt_weekly_long_30_60.plot(filename="EmaCrossLongOnly30_60Weekly.html", open_browser=False)
-st.markdown(f'### Weekly Chart - EMA30/60 + EMA Cross Exit ({date_range_label})')
-openHTML('EmaCrossLongOnly30_60Weekly.html')
-
-weekly_strategy_results = {
-    "EMA10/20 + ATR Trailing Stop": bt_weekly_atr_stats,
-    "EMA10/20 + EMA Cross Exit": bt_weekly_stats,
-    "EMA30/60 + ATR Trailing Stop": bt_weekly_30_60_stats,
-    "EMA30/60 + EMA Cross Exit": bt_weekly_long_30_60_stats,
-}
-display_strategy_comparison(weekly_strategy_results, "Weekly Strategy Comparison")
+    weekly_strategy_results = {
+        "Short-Term Trend + ATR Stop": bt_weekly_atr_stats,
+        "Long-Term Trend + ATR Stop": bt_weekly_30_60_stats,
+        "Short-Term Trend + EMA Exit": bt_weekly_stats,
+        "Long-Term Trend + EMA Exit": bt_weekly_long_30_60_stats,
+    }
+    display_strategy_comparison(weekly_strategy_results, "Weekly Strategy Comparison")
