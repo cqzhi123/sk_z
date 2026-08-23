@@ -10,6 +10,7 @@ import datetime
 #import mplfinance as mpf
 #from mpl_finance import candlestick_ohlc
 import yfinance
+from urllib.parse import quote
 #import matplotlib.dates as mpl_dates
 ##from fbprophet import Prophet
 import streamlit as st
@@ -18,8 +19,7 @@ from plotly import express as px
 ##from fbprophet.plot import plot_plotly
 from backtesting import Strategy
 from backtesting.lib import crossover
-from backtesting.lib import SignalStrategy, TrailingStrategy
-from backtesting import Backtest
+from backtesting.lib import FractionalBacktest, SignalStrategy, TrailingStrategy
 
 import codecs
 
@@ -54,9 +54,27 @@ def EMA(values, period):
 
 #####################################################################################
 
+st.markdown("<div style='height: 3.75rem;'></div>", unsafe_allow_html=True)
 st.title('Stock App')
 
-user_input = st.text_input('Enter Ticker','0992.hk')
+ticker_options = ["GC=F", "CL=F", "BTC-USD", "VOO", "^HSI", "^KLSE"]
+ticker_from_url = st.query_params.get("ticker", "")
+if (
+    ticker_from_url
+    and st.session_state.get("_ticker_from_url") != ticker_from_url
+):
+    st.session_state.ticker_selector = ticker_from_url
+    st.session_state._ticker_from_url = ticker_from_url
+
+user_input = st.selectbox(
+    "Enter Ticker",
+    options=ticker_options,
+    index=None,
+    placeholder="Choose or type a ticker",
+    accept_new_options=True,
+    help="Choose a listed ticker or type any Yahoo Finance symbol.",
+    key="ticker_selector",
+)
 user_input_start = st.date_input('Enter Start Date',datetime.date(2019, 1, 1))
 user_input_end = st.date_input('Enter End Date',datetime.date(2026, 8, 1))
 date_range_label = (
@@ -64,11 +82,15 @@ date_range_label = (
     f"{user_input_end.strftime('%Y-%m-%d')}"
 )
 
+backtest_view = st.query_params.get("view", "Summary")
+if backtest_view not in {"Summary", "Daily", "Weekly"}:
+    backtest_view = "Summary"
+
 #####################################################################################
 
-user_ticker = user_input.strip().upper()
+user_ticker = (user_input or "").strip().upper()
 if not user_ticker:
-    st.warning("Please enter a ticker symbol, for example AAPL or 1113.HK.")
+    st.info("Choose or type a ticker symbol to begin, for example AAPL or 1113.HK.")
     st.stop()
 
 try:
@@ -122,6 +144,10 @@ company_name = (
     or user_ticker
 )
 company_country = ticker_info.get("country") or "Information unavailable"
+ticker_url_value = quote(user_ticker, safe="")
+summary_button_class = "active" if backtest_view == "Summary" else ""
+daily_button_class = "active" if backtest_view == "Daily" else ""
+weekly_button_class = "active" if backtest_view == "Weekly" else ""
 st.markdown(
     f"""
     <style>
@@ -139,6 +165,15 @@ st.markdown(
         box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
         backdrop-filter: blur(8px);
     }}
+    .stock-company-header-inner {{
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+    }}
+    .stock-company-details {{
+        min-width: 0;
+    }}
     .stock-company-name {{
         font-size: 1.15rem;
         font-weight: 700;
@@ -152,11 +187,49 @@ st.markdown(
     .stock-company-header-spacer {{
         height: 3.75rem;
     }}
+    .stock-view-switcher {{
+        display: flex;
+        gap: 0.4rem;
+        flex-shrink: 0;
+    }}
+    .stock-view-button {{
+        display: inline-block;
+        padding: 0.42rem 0.8rem;
+        border: 1px solid rgba(250, 250, 250, 0.35);
+        border-radius: 0.45rem;
+        color: #fafafa !important;
+        font-size: 0.86rem;
+        font-weight: 600;
+        text-decoration: none !important;
+    }}
+    .stock-view-button.active {{
+        border-color: #ff4b4b;
+        background: #ff4b4b;
+    }}
+    @media (max-width: 640px) {{
+        .stock-company-header-inner {{
+            align-items: flex-start;
+            flex-direction: column;
+            gap: 0.55rem;
+        }}
+        .stock-company-header-spacer {{
+            height: 5.6rem;
+        }}
+    }}
     </style>
     <div class="stock-company-header">
-        <div class="stock-company-name">{company_name}</div>
-        <div class="stock-company-meta">
-            {user_ticker} · {company_country} · {date_range_label}
+        <div class="stock-company-header-inner">
+            <div class="stock-company-details">
+                <div class="stock-company-name">{company_name}</div>
+                <div class="stock-company-meta">
+                    {user_ticker} · {company_country} · {date_range_label}
+                </div>
+            </div>
+            <div class="stock-view-switcher">
+                <a class="stock-view-button {daily_button_class}" href="?view=Daily&ticker={ticker_url_value}" target="_self">Daily</a>
+                <a class="stock-view-button {weekly_button_class}" href="?view=Weekly&ticker={ticker_url_value}" target="_self">Weekly</a>
+                <a class="stock-view-button {summary_button_class}" href="?view=Summary&ticker={ticker_url_value}" target="_self">Summary</a>
+            </div>
         </div>
     </div>
     <div class="stock-company-header-spacer"></div>
@@ -165,16 +238,23 @@ st.markdown(
 )
 
 
+weekly_aggregations = {
+    "Open": "first",
+    "High": "max",
+    "Low": "min",
+    "Close": "last",
+}
+if "Volume" in df1.columns:
+    weekly_aggregations["Volume"] = "sum"
+
 weekly = (
     df1.set_index("Date")
        .resample("W-Fri")
-       .agg({
-           "Open": "first",
-           "High": "max",
-           "Low": "min",
-           "Close": "last"
-       })
+       .agg(weekly_aggregations)
 )
+
+if "Volume" not in weekly.columns:
+    weekly["Volume"] = 0
 
 weekly1 = weekly                                 
 weekly = weekly.reset_index()
@@ -216,8 +296,9 @@ def display_table(data, rows=None):
     st.dataframe(table, width="stretch", hide_index=True)
 
 
-st.markdown(f"### Daily Market Data ({date_range_label})")
-display_table(df[["Date", "Open", "High", "Low", "Close", "Volume"]], rows=10)
+if backtest_view == "Daily":
+    st.markdown(f"### Daily Market Data ({date_range_label})")
+    display_table(df[["Date", "Open", "High", "Low", "Close", "Volume"]], rows=10)
 
 # st.subheader('Weekly Market Data')
 # display_table(weekly[["Date", "Open", "High", "Low", "Close"]], rows=30)
@@ -273,25 +354,24 @@ def plot_candlestick(data, title):
     fig.update_layout(title=title, xaxis_rangeslider_visible=False)
     return fig
 
-#st.markdown(f"### Daily Chart ({date_range_label})")
-fig4 = plot_candlestick(
-    df,
-    f"Daily Chart - {user_ticker} ({date_range_label})",
-)
-st.plotly_chart(fig4, key="daily_candlestick_chart")
+if backtest_view == "Daily":
+    fig4 = plot_candlestick(
+        df,
+        f"Daily Chart - {user_ticker} ({date_range_label})",
+    )
+    st.plotly_chart(fig4, key="daily_candlestick_chart")
 
 #####################################################################################
 
-st.markdown(f"### Weekly Market Data ({date_range_label})")
-display_table(weekly, rows=10)
+if backtest_view == "Weekly":
+    st.markdown(f"### Weekly Market Data ({date_range_label})")
+    display_table(weekly, rows=10)
 
-#WEEKLY CHART
-#st.markdown(f"### Weekly Chart ({date_range_label})")
-fig5 = plot_candlestick(
-    weekly,
-    f"Weekly Chart - {user_ticker} ({date_range_label})",
-)
-st.plotly_chart(fig5, key="weekly_candlestick_chart")
+    fig5 = plot_candlestick(
+        weekly,
+        f"Weekly Chart - {user_ticker} ({date_range_label})",
+    )
+    st.plotly_chart(fig5, key="weekly_candlestick_chart")
 
 #####################################################################################
 
@@ -423,17 +503,17 @@ class EmaCrossLongOnly30_60(EmaCrossLongOnly):
 
 daily_backtest_data = df1.set_index("Date").copy()
 daily_backtest_data.index = pd.to_datetime(daily_backtest_data.index)
-bt_daily = Backtest(daily_backtest_data,EmaCrossLongOnly,cash=1000, commission=0.002,trade_on_close=True)
+bt_daily = FractionalBacktest(daily_backtest_data,EmaCrossLongOnly,cash=1000, commission=0.002,trade_on_close=True)
 bt_daily_stats = bt_daily.run()
 print("Daily backtest results:")
 print(bt_daily_stats.to_string())
 
-bt_daily_atr = Backtest(daily_backtest_data,EmaCross,cash=1000, commission=0.002,trade_on_close=True)
+bt_daily_atr = FractionalBacktest(daily_backtest_data,EmaCross,cash=1000, commission=0.002,trade_on_close=True)
 bt_daily_atr_stats = bt_daily_atr.run()
 print("Daily EMA + ATR backtest results:")
 print(bt_daily_atr_stats.to_string())
 
-bt_daily_30_60 = Backtest(
+bt_daily_30_60 = FractionalBacktest(
     daily_backtest_data,
     EmaCross30_60,
     cash=1000,
@@ -444,7 +524,7 @@ bt_daily_30_60_stats = bt_daily_30_60.run()
 print("Daily EMA 30/60 + ATR backtest results:")
 print(bt_daily_30_60_stats.to_string())
 
-bt_daily_long_30_60 = Backtest(
+bt_daily_long_30_60 = FractionalBacktest(
     daily_backtest_data,
     EmaCrossLongOnly30_60,
     cash=1000,
@@ -637,7 +717,6 @@ def display_strategy_comparison(results, title):
         ("# Trades", "Trades"),
         ("Win Rate [%]", "Win Rate"),
         ("Profit Factor", "Profit Factor"),
-        ("Expectancy [%]", "Expectancy"),
     ]
 
     def format_comparison_value(metric, value):
@@ -670,9 +749,46 @@ def display_strategy_comparison(results, title):
     st.dataframe(comparison, width="stretch")
 
 
-daily_tab, weekly_tab = st.tabs(["Daily", "Weekly"])
+def display_summary_highlights(results, title):
+    highlight_metrics = [
+        ("Return [%]", "Best Return", True, lambda value: f"{value:.2f}%"),
+        ("Sharpe Ratio", "Best Sharpe", True, lambda value: f"{value:.2f}"),
+        (
+            "Max. Drawdown [%]",
+            "Lowest Drawdown",
+            True,
+            lambda value: f"{value:.2f}%",
+        ),
+    ]
 
-with daily_tab:
+    st.markdown(f"### {title} Highlights")
+    columns = st.columns(3)
+    for column, (metric, label, maximize, formatter) in zip(columns, highlight_metrics):
+        candidates = []
+        for strategy_name, stats in results.items():
+            value = stats.get(metric)
+            try:
+                numeric_value = float(value)
+            except (TypeError, ValueError):
+                continue
+            if np.isfinite(numeric_value):
+                candidates.append((strategy_name, numeric_value))
+
+        if not candidates:
+            column.metric(label, "—")
+            column.caption("No data")
+            continue
+
+        strategy_name, value = (
+            max(candidates, key=lambda candidate: candidate[1])
+            if maximize
+            else min(candidates, key=lambda candidate: candidate[1])
+        )
+        column.metric(label, formatter(value))
+        column.caption(strategy_name)
+
+
+if backtest_view == "Daily":
     display_backtest_stats(bt_daily_atr_stats, "Short-Term Trend + ATR Stop")
     display_trade_log(bt_daily_atr_stats, "Short-Term Trend + ATR Stop Trade Records")
     display_special_objects(bt_daily_atr_stats, "Short-Term Trend + ATR Stop")
@@ -711,17 +827,17 @@ with daily_tab:
 
 #####################################################################################
 
-bt_weekly = Backtest(weekly1, EmaCrossLongOnly,cash=1000, commission=0.002,trade_on_close=True)
+bt_weekly = FractionalBacktest(weekly1, EmaCrossLongOnly,cash=1000, commission=0.002,trade_on_close=True)
 bt_weekly_stats = bt_weekly.run()
 print("Weekly backtest results:")
 print(bt_weekly_stats.to_string())
 
-bt_weekly_atr = Backtest(weekly1, EmaCross,cash=1000, commission=0.002,trade_on_close=True)
+bt_weekly_atr = FractionalBacktest(weekly1, EmaCross,cash=1000, commission=0.002,trade_on_close=True)
 bt_weekly_atr_stats = bt_weekly_atr.run()
 print("Weekly EMA + ATR backtest results:")
 print(bt_weekly_atr_stats.to_string())
 
-bt_weekly_30_60 = Backtest(
+bt_weekly_30_60 = FractionalBacktest(
     weekly1,
     EmaCross30_60,
     cash=1000,
@@ -732,7 +848,7 @@ bt_weekly_30_60_stats = bt_weekly_30_60.run()
 print("Weekly EMA 30/60 + ATR backtest results:")
 print(bt_weekly_30_60_stats.to_string())
 
-bt_weekly_long_30_60 = Backtest(
+bt_weekly_long_30_60 = FractionalBacktest(
     weekly1,
     EmaCrossLongOnly30_60,
     cash=1000,
@@ -743,7 +859,7 @@ bt_weekly_long_30_60_stats = bt_weekly_long_30_60.run()
 print("Weekly EMA 30/60 Exit results:")
 print(bt_weekly_long_30_60_stats.to_string())
 
-with weekly_tab:
+if backtest_view == "Weekly":
     display_backtest_stats(bt_weekly_atr_stats, "Short-Term Trend + ATR Stop")
     display_trade_log(bt_weekly_atr_stats, "Short-Term Trend + ATR Stop Trade Records")
     display_special_objects(bt_weekly_atr_stats, "Short-Term Trend + ATR Stop")
@@ -778,4 +894,25 @@ with weekly_tab:
         "Short-Term Trend + EMA Exit": bt_weekly_stats,
         "Long-Term Trend + EMA Exit": bt_weekly_long_30_60_stats,
     }
+    display_strategy_comparison(weekly_strategy_results, "Weekly Strategy Comparison")
+
+if backtest_view == "Summary":
+    st.markdown("## Daily & Weekly Strategy Dashboard")
+    st.caption("Compare the four strategies across both timeframes.")
+
+    daily_strategy_results = {
+        "Short-Term Trend + ATR Stop": bt_daily_atr_stats,
+        "Long-Term Trend + ATR Stop": bt_daily_30_60_stats,
+        "Short-Term Trend + EMA Exit": bt_daily_stats,
+        "Long-Term Trend + EMA Exit": bt_daily_long_30_60_stats,
+    }
+    weekly_strategy_results = {
+        "Short-Term Trend + ATR Stop": bt_weekly_atr_stats,
+        "Long-Term Trend + ATR Stop": bt_weekly_30_60_stats,
+        "Short-Term Trend + EMA Exit": bt_weekly_stats,
+        "Long-Term Trend + EMA Exit": bt_weekly_long_30_60_stats,
+    }
+    display_summary_highlights(daily_strategy_results, "Daily")
+    display_summary_highlights(weekly_strategy_results, "Weekly")
+    display_strategy_comparison(daily_strategy_results, "Daily Strategy Comparison")
     display_strategy_comparison(weekly_strategy_results, "Weekly Strategy Comparison")
