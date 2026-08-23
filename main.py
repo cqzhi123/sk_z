@@ -58,7 +58,9 @@ def EMA(values, period):
 st.markdown("<div style='height: 3.75rem;'></div>", unsafe_allow_html=True)
 st.title('Stock App')
 
-ticker_options = ["1155.KL", "GC=F", "CL=F", "BTC-USD", "VOO", "^HSI", "^KLSE"]
+ticker_options = [
+    "GC=F", "CL=F", "BTC-USD", "VOO", "^HSI", "^KLSE",
+]
 ticker_from_url = st.query_params.get("ticker", "")
 if (
     ticker_from_url
@@ -67,13 +69,22 @@ if (
     st.session_state.ticker_selector = ticker_from_url
     st.session_state._ticker_from_url = ticker_from_url
 
+if "ticker_selector" not in st.session_state:
+    st.session_state.ticker_selector = "1155.KL"
+
 user_input = st.selectbox(
     "Enter Ticker",
     options=ticker_options,
-    index=0,
+    index=None,
     accept_new_options=True,
     help="Choose a listed ticker or type any Yahoo Finance symbol.",
     key="ticker_selector",
+)
+st.caption(
+    "Sample tickers — "
+    "US: AAPL, GOOGL, MSFT  |  "
+    "Malaysia: 1155.KL, 5183.KL, 5296.KL  |  "
+    "Hong Kong: 0700.HK, 1810.HK, 9988.HK"
 )
 user_input_start = st.date_input('Enter Start Date',datetime.date(2019, 1, 1))
 user_input_end = st.date_input('Enter End Date',datetime.date(2026, 8, 1))
@@ -677,7 +688,6 @@ def display_trade_log(stats, title):
         "Commission": "Commission",
         "ReturnPct": "Return %",
         "Duration": "Duration",
-        "Tag": "Tag",
     }
     preferred_columns = [
         "EntryTime",
@@ -693,14 +703,10 @@ def display_trade_log(stats, title):
         "Commission",
         "ReturnPct",
         "Duration",
-        "Tag",
     ]
     ordered_columns = [
         column for column in preferred_columns if column in trade_log.columns
     ]
-    ordered_columns.extend(
-        column for column in trade_log.columns if column not in ordered_columns
-    )
     trade_log = trade_log[ordered_columns].rename(columns=column_labels)
 
     for date_column in ("Entry Date", "Exit Date"):
