@@ -62,6 +62,23 @@ ticker_options = [
     "GC=F", "CL=F", "BTC-USD", "VOO", "^HSI", "^KLSE",
 ]
 ticker_from_url = st.query_params.get("ticker", "")
+start_date_from_url = st.query_params.get("start", "")
+end_date_from_url = st.query_params.get("end", "")
+
+
+def get_date_from_url(value, fallback):
+    try:
+        return datetime.date.fromisoformat(str(value)) if value else fallback
+    except ValueError:
+        return fallback
+
+
+start_date_default = get_date_from_url(
+    start_date_from_url, datetime.date(2019, 1, 1)
+)
+end_date_default = get_date_from_url(
+    end_date_from_url, datetime.date(2026, 8, 1)
+)
 if (
     ticker_from_url
     and st.session_state.get("_ticker_from_url") != ticker_from_url
@@ -71,6 +88,22 @@ if (
 
 if "ticker_selector" not in st.session_state:
     st.session_state.ticker_selector = "1155.KL"
+if (
+    start_date_from_url
+    and st.session_state.get("_start_date_from_url") != start_date_from_url
+):
+    st.session_state.start_date_selector = start_date_default
+    st.session_state._start_date_from_url = start_date_from_url
+if (
+    end_date_from_url
+    and st.session_state.get("_end_date_from_url") != end_date_from_url
+):
+    st.session_state.end_date_selector = end_date_default
+    st.session_state._end_date_from_url = end_date_from_url
+if "start_date_selector" not in st.session_state:
+    st.session_state.start_date_selector = start_date_default
+if "end_date_selector" not in st.session_state:
+    st.session_state.end_date_selector = end_date_default
 
 user_input = st.selectbox(
     "Enter Ticker",
@@ -86,8 +119,8 @@ st.caption(
     "Malaysia: 1155.KL, 5183.KL, 5296.KL  |  "
     "Hong Kong: 0700.HK, 1810.HK, 9988.HK"
 )
-user_input_start = st.date_input('Enter Start Date',datetime.date(2019, 1, 1))
-user_input_end = st.date_input('Enter End Date',datetime.date(2026, 8, 1))
+user_input_start = st.date_input('Enter Start Date', key="start_date_selector")
+user_input_end = st.date_input('Enter End Date', key="end_date_selector")
 date_range_label = (
     f"{user_input_start.strftime('%Y-%m-%d')} to "
     f"{user_input_end.strftime('%Y-%m-%d')}"
@@ -176,6 +209,8 @@ display_company_name = escape(str(company_name))
 display_company_country = escape(str(company_country))
 display_ticker = escape(str(user_ticker))
 ticker_url_value = quote(user_ticker, safe="")
+start_date_url_value = user_input_start.isoformat()
+end_date_url_value = user_input_end.isoformat()
 summary_button_class = "active" if backtest_view == "Summary" else ""
 daily_button_class = "active" if backtest_view == "Daily" else ""
 weekly_button_class = "active" if backtest_view == "Weekly" else ""
@@ -289,9 +324,9 @@ st.markdown(
                 </div>
             </div>
             <div class="stock-view-switcher">
-                <a class="stock-view-button {daily_button_class}" href="?view=Daily&ticker={ticker_url_value}" target="_self">Daily</a>
-                <a class="stock-view-button {weekly_button_class}" href="?view=Weekly&ticker={ticker_url_value}" target="_self">Weekly</a>
-                <a class="stock-view-button {summary_button_class}" href="?view=Summary&ticker={ticker_url_value}" target="_self">Summary</a>
+                <a class="stock-view-button {daily_button_class}" href="?view=Daily&amp;ticker={ticker_url_value}&amp;start={start_date_url_value}&amp;end={end_date_url_value}" target="_self">Daily</a>
+                <a class="stock-view-button {weekly_button_class}" href="?view=Weekly&amp;ticker={ticker_url_value}&amp;start={start_date_url_value}&amp;end={end_date_url_value}" target="_self">Weekly</a>
+                <a class="stock-view-button {summary_button_class}" href="?view=Summary&amp;ticker={ticker_url_value}&amp;start={start_date_url_value}&amp;end={end_date_url_value}" target="_self">Summary</a>
             </div>
         </div>
     </div>
