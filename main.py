@@ -77,7 +77,7 @@ start_date_default = get_date_from_url(
     start_date_from_url, datetime.date(2019, 1, 1)
 )
 end_date_default = get_date_from_url(
-    end_date_from_url, datetime.date(2026, 8, 1)
+    end_date_from_url, datetime.date(2026, 10, 1)
 )
 if (
     ticker_from_url
