@@ -178,18 +178,44 @@ df1 = df.copy()
 tickerData = yf.Ticker(user_ticker) # Get ticker data
 
 try:
-    ticker_info = tickerData.info
-except Exception:
+    ticker_info = tickerData.info or {}
+    if not isinstance(ticker_info, dict):
+        ticker_info = {}
+    ticker_info_error = None
+except Exception as exc:
     ticker_info = {}
+    ticker_info_error = f"{type(exc).__name__}: {exc}"
+
+if not ticker_info:
+    print(
+        f"Yahoo Finance returned no company profile for {user_ticker}: "
+        f"{ticker_info_error or 'empty response'}"
+    )
+
+# Yahoo's profile endpoint may omit regional tickers even when price history works.
+# Keep a small fallback for the default Malaysian ticker so its header stays useful.
+company_profile_fallbacks = {
+    "1155.KL": {
+        "name": "Malayan Banking Berhad",
+        "country": "Malaysia",
+        "website": "https://www.maybank.com/",
+    },
+}
+fallback_profile = company_profile_fallbacks.get(user_ticker, {})
 
 company_name = (
     ticker_info.get("longName")
     or ticker_info.get("shortName")
+    or fallback_profile.get("name")
     or user_ticker
 )
-company_country = ticker_info.get("country") or "Information unavailable"
+company_country = (
+    ticker_info.get("country")
+    or fallback_profile.get("country")
+    or "Information unavailable"
+)
 company_logo_url = ticker_info.get("logo_url")
-company_website = ticker_info.get("website") or ""
+company_website = ticker_info.get("website") or fallback_profile.get("website", "")
 if not company_logo_url and company_website:
     company_domain = urlparse(str(company_website)).netloc
     if company_domain:
