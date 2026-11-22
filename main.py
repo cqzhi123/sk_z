@@ -177,26 +177,83 @@ df = df.reset_index().dropna()
 df1 = df.copy()
 tickerData = yf.Ticker(user_ticker) # Get ticker data
 
-try:
-    ticker_info = tickerData.info
-except Exception:
-    ticker_info = {}
+import logging
+
+logger = logging.getLogger(__name__)
+
+# Backup company information when Yahoo Finance is unavailable.
+COMPANY_FALLBACK = {
+    "1155.KL": {
+        "longName": "Malayan Banking Berhad (Maybank)",
+        "country": "Malaysia",
+        "website": "https://www.maybank.com",
+    },
+}
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def get_company_info(symbol):
+    symbol = symbol.strip().upper()
+    info = {}
+    fallback = COMPANY_FALLBACK.get(symbol, {})
+
+    # Method 1: Yahoo Finance company information.
+    try:
+        info = yf.Ticker(symbol).info or {}
+    except Exception as exc:
+        logger.warning("Ticker.info failed for %s: %r", symbol, exc)
+
+    # Method 2: Yahoo Finance Search for missing company names.
+    if not (info.get("longName") or info.get("shortName") or fallback.get("longName")):
+        try:
+            results = yf.Search(symbol, max_results=5).quotes or []
+            for result in results:
+                if str(result.get("symbol", "")).upper() == symbol:
+                    name = result.get("longname") or result.get("shortname")
+                    if name:
+                        info["longName"] = name
+                    break
+        except Exception as exc:
+            logger.warning("Ticker search failed for %s: %r", symbol, exc)
+
+    # Method 3: Merge backup values and available Yahoo Finance values.
+    return {**fallback, **{key: value for key, value in info.items() if value}}
+
+
+ticker_info = get_company_info(user_ticker)
 
 company_name = (
     ticker_info.get("longName")
     or ticker_info.get("shortName")
     or user_ticker
 )
-company_country = ticker_info.get("country") or "Information unavailable"
-company_logo_url = ticker_info.get("logo_url")
+
+# A listing market is not necessarily the company's country of domicile.
+market = {
+    ".KL": "Malaysia (listing)",
+    ".HK": "Hong Kong (listing)",
+    ".SI": "Singapore (listing)",
+}
+company_country = ticker_info.get("country") or next(
+    (name for suffix, name in market.items() if user_ticker.endswith(suffix)),
+    "Information unavailable",
+)
+
 company_website = ticker_info.get("website") or ""
+company_logo_url = ticker_info.get("logo_url")
+
+# Yahoo Finance may not provide a logo URL; use the company's website favicon.
 if not company_logo_url and company_website:
-    company_domain = urlparse(str(company_website)).netloc
+    website = str(company_website).strip()
+    if "://" not in website:
+        website = "https://" + website
+    company_domain = urlparse(website).hostname
     if company_domain:
         company_logo_url = (
             "https://www.google.com/s2/favicons?domain="
             f"{quote(company_domain, safe='')}&sz=128"
         )
+
 company_logo_html = '<span class="stock-company-logo-fallback" aria-hidden="true">↗</span>'
 if company_logo_url:
     company_logo_html = (
