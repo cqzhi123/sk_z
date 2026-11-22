@@ -64,6 +64,7 @@ ticker_options = [
 ]
 ticker_from_url = st.query_params.get("ticker", "")
 start_date_from_url = st.query_params.get("start", "")
+end_date_from_url = st.query_params.get("end", "")
 
 
 def get_date_from_url(value, fallback):
@@ -94,7 +95,24 @@ if (
     st.session_state._start_date_from_url = start_date_from_url
 if "start_date_selector" not in st.session_state:
     st.session_state.start_date_selector = start_date_default
-st.session_state.end_date_selector = today_malaysia
+# Default to today; retain a user's selected historical end date.
+end_date_min = datetime.date(1900, 1, 1)
+end_date_default = max(
+    end_date_min,
+    min(get_date_from_url(end_date_from_url, today_malaysia), today_malaysia),
+)
+if st.session_state.get("_end_date_from_url") != end_date_from_url:
+    st.session_state.end_date_selector = end_date_default
+    st.session_state._end_date_from_url = end_date_from_url
+elif "end_date_selector" not in st.session_state:
+    st.session_state.end_date_selector = end_date_default
+elif (
+    not end_date_from_url
+    and st.session_state.end_date_selector == st.session_state.get("_end_date_today")
+):
+    # Roll the default forward if the app remains open across midnight.
+    st.session_state.end_date_selector = today_malaysia
+st.session_state._end_date_today = today_malaysia
 
 user_input = st.selectbox(
     "Enter Ticker",
@@ -114,13 +132,14 @@ user_input_start = st.date_input('Enter Start Date', key="start_date_selector")
 user_input_end = st.date_input(
     'Enter End Date',
     key="end_date_selector",
-    disabled=True,
-    help="Automatically set to today's date in Malaysia.",
+    min_value=end_date_min,
+    max_value=today_malaysia,
+    help="Defaults to today in Malaysia. You can select an earlier date.",
 )
-# Yahoo Finance's end date is exclusive; include today's data if available.
+# Yahoo Finance's end date is exclusive; include the selected end date.
 download_end_date = user_input_end + datetime.timedelta(days=1)
 if user_input_start > user_input_end:
-    st.warning("Start Date cannot be later than today.")
+    st.warning("Start Date cannot be later than End Date.")
     st.stop()
 date_range_label = (
     f"{user_input_start.strftime('%Y-%m-%d')} to "
@@ -268,6 +287,11 @@ display_company_country = escape(str(company_country))
 display_ticker = escape(str(user_ticker))
 ticker_url_value = quote(user_ticker, safe="")
 start_date_url_value = user_input_start.isoformat()
+# Keep custom dates when navigating, but leave the default date dynamic.
+end_date_url_param = (
+    f"&amp;end={user_input_end.isoformat()}"
+    if user_input_end != today_malaysia else ""
+)
 summary_button_class = "active" if backtest_view == "Summary" else ""
 daily_button_class = "active" if backtest_view == "Daily" else ""
 weekly_button_class = "active" if backtest_view == "Weekly" else ""
@@ -381,9 +405,9 @@ st.markdown(
                 </div>
             </div>
             <div class="stock-view-switcher">
-                <a class="stock-view-button {daily_button_class}" href="?view=Daily&amp;ticker={ticker_url_value}&amp;start={start_date_url_value}" target="_self">Daily</a>
-                <a class="stock-view-button {weekly_button_class}" href="?view=Weekly&amp;ticker={ticker_url_value}&amp;start={start_date_url_value}" target="_self">Weekly</a>
-                <a class="stock-view-button {summary_button_class}" href="?view=Summary&amp;ticker={ticker_url_value}&amp;start={start_date_url_value}" target="_self">Summary</a>
+                <a class="stock-view-button {daily_button_class}" href="?view=Daily&amp;ticker={ticker_url_value}&amp;start={start_date_url_value}{end_date_url_param}" target="_self">Daily</a>
+                <a class="stock-view-button {weekly_button_class}" href="?view=Weekly&amp;ticker={ticker_url_value}&amp;start={start_date_url_value}{end_date_url_param}" target="_self">Weekly</a>
+                <a class="stock-view-button {summary_button_class}" href="?view=Summary&amp;ticker={ticker_url_value}&amp;start={start_date_url_value}{end_date_url_param}" target="_self">Summary</a>
             </div>
         </div>
     </div>
