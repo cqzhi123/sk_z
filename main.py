@@ -406,7 +406,7 @@ earnings_zone = earnings_timezone(user_ticker, ticker_info)
 earnings_calendar = get_earnings_calendar(user_ticker)
 earnings_events = None
 upcoming_earnings = next_earnings_event(earnings_calendar, ticker_info, today_malaysia, earnings_zone)
-if backtest_view == 'Fundamental' or upcoming_earnings is None:
+if backtest_view in {'Fundamental', 'Overview'} or upcoming_earnings is None:
     earnings_events = get_earnings_events(user_ticker, earnings_zone)
     upcoming_earnings = next_earnings_event(earnings_calendar, ticker_info, today_malaysia, earnings_zone, earnings_events)
 earnings_alert, earnings_alert_class = earnings_countdown(upcoming_earnings, today_malaysia)
@@ -1002,6 +1002,203 @@ def news_fields(item):
     return str(title), str(publisher), date, link
 
 
+
+# Overview dashboard: company snapshots and historical price data have different dates.
+def overview_fundamentals(info, price_prefix, financial_prefix):
+    return [
+        ("Market Cap", formatted(info.get("marketCap"), prefix=price_prefix, compact=True)),
+        ("P/E (TTM)", formatted(info.get("trailingPE"))),
+        ("Forward P/E", formatted(info.get("forwardPE"))),
+        ("Price / Book", formatted(info.get("priceToBook"))),
+        ("EPS (TTM)", formatted(info.get("trailingEps"), digits=4, prefix=price_prefix)),
+        ("ROE", percent(info.get("returnOnEquity"))),
+        ("Revenue (TTM)", formatted(info.get("totalRevenue"), prefix=financial_prefix, compact=True)),
+        ("Revenue Growth (YoY)", percent(info.get("revenueGrowth"))),
+        ("Earnings Growth (YoY)", percent(info.get("earningsGrowth"))),
+        ("Net Profit Margin", percent(info.get("profitMargins"))),
+        ("Total Cash", formatted(info.get("totalCash"), prefix=financial_prefix, compact=True)),
+        ("Total Debt", formatted(info.get("totalDebt"), prefix=financial_prefix, compact=True)),
+        ("Debt / Equity", formatted(info.get("debtToEquity"), suffix="%")),
+        ("ROA", percent(info.get("returnOnAssets"))),
+        ("Beta", formatted(info.get("beta"))),
+    ]
+
+
+def quarterly_key_data(statements):
+    """Select core financial rows without substituting different fiscal periods."""
+    definitions = [
+        ("Revenue", "Income Statement", ("Total Revenue", "Operating Revenue"), "money"),
+        ("Net Income", "Income Statement", ("Net Income", "Net Income Common Stockholders"), "money"),
+        ("Operating Income", "Income Statement", ("Operating Income",), "money"),
+        ("Diluted EPS", "Income Statement", ("Diluted EPS",), "eps"),
+        ("Basic EPS", "Income Statement", ("Basic EPS",), "eps"),
+        ("Total Assets", "Balance Sheet", ("Total Assets",), "money"),
+        ("Total Equity", "Balance Sheet", ("Stockholders Equity", "Total Equity Gross Minority Interest"), "money"),
+        ("Total Debt", "Balance Sheet", ("Total Debt",), "money"),
+        ("Operating Cash Flow", "Cash Flow", ("Operating Cash Flow", "Cash Flow From Continuing Operating Activities"), "money"),
+        ("Free Cash Flow", "Cash Flow", ("Free Cash Flow",), "money"),
+    ]
+    dates = sorted({pd.Timestamp(d) for table in statements.values() for d in table.columns}, reverse=True)
+    values = {}
+    units = {}
+    def normalized(label):
+        return ''.join(c for c in str(label).lower() if c.isalnum())
+    for label, statement, candidates, unit in definitions:
+        table = statements.get(statement, pd.DataFrame())
+        keys = {normalized(idx): idx for idx in table.index}
+        for candidate in candidates:
+            if normalized(candidate) in keys:
+                row = table.loc[keys[normalized(candidate)]]
+                if isinstance(row, pd.DataFrame):
+                    row = row.iloc[0]
+                numeric = pd.to_numeric(row, errors="coerce").reindex(dates)
+                if numeric.notna().any():
+                    values[label] = numeric
+                    units[label] = unit
+                    break
+    return pd.DataFrame(values, index=dates).T, units
+
+
+def quarterly_yoy(row, latest_date):
+    latest = number(row.get(latest_date))
+    target = latest_date - pd.DateOffset(years=1)
+    candidates = [d for d in row.index if d < latest_date and abs((d-target).days) <= 14 and number(row.get(d)) is not None]
+    if latest is None or not candidates:
+        return None
+    prior = number(row.get(min(candidates, key=lambda d: abs((d-target).days))))
+    # A zero or negative base makes the usual growth percentage misleading.
+    return (latest / prior - 1) * 100 if prior is not None and prior > 0 else None
+
+
+def display_overview_quarters(statements, financial_currency):
+    st.subheader("Latest Quarterly Results")
+    data, units = quarterly_key_data(statements)
+    if data.empty:
+        st.info("Quarterly highlights are unavailable for this instrument.")
+        return
+    prefix = f"{financial_currency} " if financial_currency else ""
+    latest = data.columns[0]
+    st.caption(f"Latest available fiscal period: {latest:%Y-%m-%d} · Statement currency: {financial_currency or 'Not provided'}. Missing cells are not zero.")
+    items = []
+    for label in ("Revenue", "Net Income", "Diluted EPS" if "Diluted EPS" in data.index else "Basic EPS"):
+        if label not in data.index:
+            continue
+        row = data.loc[label]
+        val = formatted(row.get(latest), prefix=prefix, digits=4 if units[label] == "eps" else 2, compact=units[label] == "money")
+        growth = quarterly_yoy(row, latest)
+        items.append((label, val, growth))
+    for col, (label, value, growth) in zip(st.columns(3), items):
+        col.metric(label, value, delta=f"{growth:+.2f}% YoY" if growth is not None else None)
+    table = data.copy().astype(object)
+    for label in data.index:
+        table.loc[label] = [formatted(v, digits=4 if units[label] == "eps" else 2, compact=units[label] == "money") for v in data.loc[label]]
+    table.columns = [d.strftime("%Y-%m-%d") for d in data.columns]
+    table["Latest YoY"] = [formatted(quarterly_yoy(data.loc[label], latest), suffix="%") for label in data.index]
+    # Growth rates only make sense for flow metrics here, not balances.
+    for label in ("Total Assets", "Total Equity", "Total Debt"):
+        if label in table.index:
+            table.loc[label, "Latest YoY"] = "—"
+    table.index.name = "Financial Item"
+    st.dataframe(table.reset_index(), hide_index=True, width="stretch")
+    st.caption("YoY compares the same fiscal quarter one year earlier (within 14 days). No growth rate is shown when the comparison period is missing or its base is non-positive. All available quarters are displayed.")
+    labels = [label for label in ("Revenue", "Net Income") if label in data.index]
+    if labels:
+        dates = list(reversed(data.columns))
+        fig = go.Figure()
+        for label in labels:
+            fig.add_trace(go.Bar(x=[d.strftime("%Y-%m-%d") for d in dates], y=[number(data.loc[label, d]) for d in dates], name=label))
+        fig.update_layout(barmode="group", height=320, margin=dict(l=10,r=10,t=25,b=10), yaxis_title=financial_currency or "Reported currency", legend_title_text="")
+        fig.update_xaxes(type="category")
+        st.plotly_chart(fig, key="overview_quarterly_chart")
+
+
+def dividend_overview_stats(payments, today):
+    """Calendar-year and trailing-12-month cash dividends per share."""
+    if payments is None:
+        return None
+    amounts = pd.to_numeric(payments["Dividends"], errors="coerce")
+    amounts.index = pd.DatetimeIndex(amounts.index).tz_localize(None).normalize()
+    end = pd.Timestamp(today)
+    amounts = amounts.loc[(amounts.index <= end) & amounts.notna() & (amounts > 0)].sort_index()
+    trailing_start = end - pd.DateOffset(years=1)
+    annual = amounts.groupby(amounts.index.year).sum()
+    return {"amounts": amounts, "annual": annual,
+            "ttm": amounts.loc[amounts.index > trailing_start].sum(),
+            "ytd": amounts.loc[amounts.index.year == end.year].sum(),
+            "last_amount": amounts.iloc[-1] if not amounts.empty else None,
+            "last_date": amounts.index[-1] if not amounts.empty else None}
+
+
+def display_overview_dividends(symbol, info, calendar, today, timezone, price_prefix):
+    st.subheader("Dividend Overview")
+    st.caption("Latest Yahoo Finance snapshot and cash-dividend records up to today, independent of the selected backtest dates. Historical dates are ex-dividend dates, not payment dates.")
+    # Request five completed calendar years plus the current year; no extra dependency.
+    start = datetime.date(today.year - 5, 1, 1)
+    payments = get_dividend_history(symbol, start, today + datetime.timedelta(days=1))
+    stats = dividend_overview_stats(payments, today)
+    next_dates = sorted(set(earnings_dates_list(calendar.get("Ex-Dividend Date"), timezone) + earnings_dates_list(info.get("exDividendDate"), timezone)))
+    next_ex = next((d for d in next_dates if d >= today), None)
+    metric_grid([
+        ("Trailing Dividend Yield", percent(info.get("trailingAnnualDividendYield"))),
+        ("Payout Ratio", percent(info.get("payoutRatio"))),
+        ("Recorded Dividend / Share (12M)", formatted(stats["ttm"] if stats is not None else None, digits=4, prefix=price_prefix)),
+        ("Recorded Dividend / Share (YTD)", formatted(stats["ytd"] if stats is not None else None, digits=4, prefix=price_prefix)),
+        ("Last Dividend / Share", formatted(stats["last_amount"] if stats is not None else None, digits=4, prefix=price_prefix)),
+        ("Last Ex-Dividend Date", stats["last_date"].strftime("%Y-%m-%d") if stats is not None and stats["last_date"] is not None else "—"),
+        ("Upcoming Ex-Dividend Date", next_ex.strftime("%Y-%m-%d") if next_ex else "Unavailable"),
+        ("5-Year Average Yield (Provider)", formatted(info.get("fiveYearAvgDividendYield"), suffix="%")),
+        ("Cash Dividends (Last 12M)", str(int((stats["amounts"].index > pd.Timestamp(today)-pd.DateOffset(years=1)).sum())) if stats is not None else "—"),
+    ])
+    st.caption("Yield and payout ratio are Yahoo Finance's reported metrics, not recalculated from adjusted historical prices. An upcoming ex-date is provider-reported, not independently confirmed. Cash totals exclude stock splits and non-dividend distributions.")
+    if stats is None:
+        st.info("Dividend history is currently unavailable; snapshot metrics may still be available.")
+        return
+    if stats["amounts"].empty:
+        st.info("No cash dividend records were returned in the requested history. This does not confirm that the company never pays dividends.")
+        return
+    annual = stats["annual"]
+    st.markdown("**Annual Dividend per Share**")
+    fig = go.Figure(go.Bar(x=[f"{y} (YTD)" if y == today.year else str(y) for y in annual.index], y=annual.values, name="Dividend / Share", marker_color="#22C55E"))
+    fig.update_layout(height=290, margin=dict(l=10,r=10,t=15,b=10), yaxis_title=price_prefix.strip() or "Per share")
+    st.plotly_chart(fig, key="overview_dividends_annual")
+    st.caption("Only years with returned dividend records are plotted. The first year may be partial for new listings; the current year is YTD.")
+    prior, earlier = number(annual.get(today.year-1)), number(annual.get(today.year-2))
+    growth = (prior / earlier - 1) * 100 if prior is not None and earlier is not None and earlier > 0 else None
+    metric_grid([("Last Completed Year's Dividend", formatted(prior, digits=4, prefix=price_prefix)), ("Full-Year Dividend Growth (YoY)", formatted(growth, suffix="%"))], count=2)
+    st.markdown("**Recent Dividend Records**")
+    records = stats["amounts"].rename("Dividend per Share").rename_axis("Ex-Dividend Date").reset_index().sort_values("Ex-Dividend Date", ascending=False)
+    records["Ex-Dividend Date"] = records["Ex-Dividend Date"].dt.strftime("%Y-%m-%d")
+    st.dataframe(records.head(8), hide_index=True, width="stretch")
+    st.download_button("Download Dividend History CSV", records.to_csv(index=False).encode("utf-8"), file_name=f"{symbol}_overview_dividends.csv", mime="text/csv", key="overview_dividend_csv")
+
+
+def display_overview_earnings(event, events, calendar, today, timezone, financial_prefix):
+    st.subheader("Earnings Calendar")
+    alert, level = earnings_countdown(event, today)
+    if level in {"urgent", "soon"}:
+        st.warning(alert)
+    else:
+        st.caption(alert)
+    history = events if isinstance(events, pd.DataFrame) else normalize_earnings_history(None)
+    prior = history.loc[(history["Earnings Date"] <= today) & history["Reported EPS"].notna()].sort_values("Earnings Date", ascending=False)
+    calendar_dates = earnings_dates_list(calendar.get("Earnings Date"), timezone)
+    current_estimate = bool(event and event["source"] == "Yahoo Finance calendar" and calendar_dates and calendar_dates[-1] >= today)
+    eps_estimate = calendar.get("Earnings Average") if current_estimate else None
+    if event and not current_estimate:
+        candidates = history.loc[(history["Earnings Date"] >= event["start"]) & (history["Earnings Date"] <= event["end"]) & history["Reported EPS"].isna() & history["EPS Estimate"].notna()].sort_values("Earnings Date")
+        if not candidates.empty:
+            eps_estimate = candidates.iloc[0]["EPS Estimate"]
+    metric_grid([
+        ("Next Earnings (Est.)", earnings_date_label(event)),
+        ("EPS Estimate", formatted(eps_estimate, digits=4)),
+        ("Revenue Estimate", formatted(calendar.get("Revenue Average") if current_estimate else None, compact=True, prefix=financial_prefix)),
+        ("Last Reported EPS Date", prior.iloc[0]["Earnings Date"].isoformat() if not prior.empty else "—"),
+        ("Last Reported EPS", formatted(prior.iloc[0]["Reported EPS"] if not prior.empty else None, digits=4)),
+        ("Last Earnings Surprise", formatted(prior.iloc[0]["Surprise (%)"] if not prior.empty else None, suffix="%")),
+    ])
+    st.caption(f"Source: {event['source'] if event else 'Yahoo Finance'} · Future dates are estimated / unconfirmed. Use the Fundamental tab for full historical earnings and official company website links.")
+
+
 currency = str(ticker_info.get("currency") or "")
 price_prefix = f"{currency} " if currency else ""
 monthly = monthly_bars(df1)
@@ -1018,6 +1215,29 @@ if backtest_view == "Overview":
     cols[1].metric("Day High", formatted(latest["High"], prefix=price_prefix))
     cols[2].metric("Day Low", formatted(latest["Low"], prefix=price_prefix))
     metric_grid([("Day Open", formatted(latest["Open"], prefix=price_prefix)), ("Volume", formatted(latest["Volume"], compact=True)), ("Currency", currency or "—")])
+    st.caption(f"Sector: {ticker_info.get('sector') or '—'} · Industry: {ticker_info.get('industry') or '—'} · Exchange: {ticker_info.get('fullExchangeName') or ticker_info.get('exchange') or '—'}")
+    financial_currency = str(ticker_info.get("financialCurrency") or "")
+    financial_prefix = f"{financial_currency} " if financial_currency else ""
+    st.markdown("**Key Metrics at a Glance**")
+    metric_grid([
+        ("P/E (TTM)", formatted(ticker_info.get("trailingPE"))),
+        ("Trailing Dividend Yield", percent(ticker_info.get("trailingAnnualDividendYield"))),
+        ("Next Earnings (Est.)", earnings_date_label(upcoming_earnings)),
+    ])
+    st.caption("Latest company snapshot, independent of the selected price date range.")
+    st.divider()
+    st.subheader("Fundamental Overview")
+    st.caption(f"Latest available company snapshot from Yahoo Finance, not historical data as of your selected End Date. Financial currency: {financial_currency or 'Not provided'}.")
+    fundamentals = overview_fundamentals(ticker_info, price_prefix, financial_prefix)
+    if all(value == "—" for _, value in fundamentals):
+        st.info("Fundamental metrics are not available for this instrument.")
+    metric_grid(fundamentals)
+    display_overview_quarters(get_quarterly_statements(user_ticker), financial_currency)
+    st.divider()
+    display_overview_dividends(user_ticker, ticker_info, earnings_calendar, today_malaysia, earnings_zone, price_prefix)
+    st.divider()
+    display_overview_earnings(upcoming_earnings, earnings_events, earnings_calendar, today_malaysia, earnings_zone, financial_prefix)
+    st.divider()
     st.subheader("Price Performance")
     metric_grid(historical_performance(df1))
     st.caption("Returns use the selected price history ending at its last available bar. Missing lookback history is shown as —.")
