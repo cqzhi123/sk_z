@@ -4,6 +4,7 @@ import numpy as np
 import yfinance as yf
 #from pandas_datareader import data
 from datetime import datetime
+from zoneinfo import ZoneInfo
 import datetime
 #import matplotlib.pyplot as plt
 #from pandas.tseries.frequencies import to_offset
@@ -63,7 +64,6 @@ ticker_options = [
 ]
 ticker_from_url = st.query_params.get("ticker", "")
 start_date_from_url = st.query_params.get("start", "")
-end_date_from_url = st.query_params.get("end", "")
 
 
 def get_date_from_url(value, fallback):
@@ -76,9 +76,7 @@ def get_date_from_url(value, fallback):
 start_date_default = get_date_from_url(
     start_date_from_url, datetime.date(2019, 1, 1)
 )
-end_date_default = get_date_from_url(
-    end_date_from_url, datetime.date(2026, 10, 1)
-)
+today_malaysia = datetime.datetime.now(ZoneInfo("Asia/Kuala_Lumpur")).date()
 if (
     ticker_from_url
     and st.session_state.get("_ticker_from_url") != ticker_from_url
@@ -94,16 +92,9 @@ if (
 ):
     st.session_state.start_date_selector = start_date_default
     st.session_state._start_date_from_url = start_date_from_url
-if (
-    end_date_from_url
-    and st.session_state.get("_end_date_from_url") != end_date_from_url
-):
-    st.session_state.end_date_selector = end_date_default
-    st.session_state._end_date_from_url = end_date_from_url
 if "start_date_selector" not in st.session_state:
     st.session_state.start_date_selector = start_date_default
-if "end_date_selector" not in st.session_state:
-    st.session_state.end_date_selector = end_date_default
+st.session_state.end_date_selector = today_malaysia
 
 user_input = st.selectbox(
     "Enter Ticker",
@@ -120,7 +111,17 @@ st.caption(
     "Hong Kong: 0700.HK, 1810.HK, 9988.HK"
 )
 user_input_start = st.date_input('Enter Start Date', key="start_date_selector")
-user_input_end = st.date_input('Enter End Date', key="end_date_selector")
+user_input_end = st.date_input(
+    'Enter End Date',
+    key="end_date_selector",
+    disabled=True,
+    help="Automatically set to today's date in Malaysia.",
+)
+# Yahoo Finance's end date is exclusive; include today's data if available.
+download_end_date = user_input_end + datetime.timedelta(days=1)
+if user_input_start > user_input_end:
+    st.warning("Start Date cannot be later than today.")
+    st.stop()
 date_range_label = (
     f"{user_input_start.strftime('%Y-%m-%d')} to "
     f"{user_input_end.strftime('%Y-%m-%d')}"
@@ -141,7 +142,7 @@ try:
     df = yf.download(
         user_ticker,
         start=user_input_start,
-        end=user_input_end,
+        end=download_end_date,
         progress=False,
     )
 except Exception:
@@ -267,7 +268,6 @@ display_company_country = escape(str(company_country))
 display_ticker = escape(str(user_ticker))
 ticker_url_value = quote(user_ticker, safe="")
 start_date_url_value = user_input_start.isoformat()
-end_date_url_value = user_input_end.isoformat()
 summary_button_class = "active" if backtest_view == "Summary" else ""
 daily_button_class = "active" if backtest_view == "Daily" else ""
 weekly_button_class = "active" if backtest_view == "Weekly" else ""
@@ -381,9 +381,9 @@ st.markdown(
                 </div>
             </div>
             <div class="stock-view-switcher">
-                <a class="stock-view-button {daily_button_class}" href="?view=Daily&amp;ticker={ticker_url_value}&amp;start={start_date_url_value}&amp;end={end_date_url_value}" target="_self">Daily</a>
-                <a class="stock-view-button {weekly_button_class}" href="?view=Weekly&amp;ticker={ticker_url_value}&amp;start={start_date_url_value}&amp;end={end_date_url_value}" target="_self">Weekly</a>
-                <a class="stock-view-button {summary_button_class}" href="?view=Summary&amp;ticker={ticker_url_value}&amp;start={start_date_url_value}&amp;end={end_date_url_value}" target="_self">Summary</a>
+                <a class="stock-view-button {daily_button_class}" href="?view=Daily&amp;ticker={ticker_url_value}&amp;start={start_date_url_value}" target="_self">Daily</a>
+                <a class="stock-view-button {weekly_button_class}" href="?view=Weekly&amp;ticker={ticker_url_value}&amp;start={start_date_url_value}" target="_self">Weekly</a>
+                <a class="stock-view-button {summary_button_class}" href="?view=Summary&amp;ticker={ticker_url_value}&amp;start={start_date_url_value}" target="_self">Summary</a>
             </div>
         </div>
     </div>
@@ -421,7 +421,7 @@ df2 = df
 #CHANGE A LOT AAAAAAAAA, PUT IMPORTANT PARAMETER BEFORE THIS
 
 try:
-    hist = tickerData.history(start=user_input_start,end=user_input_end)
+    hist = tickerData.history(start=user_input_start, end=download_end_date)
 except Exception:
     hist = pd.DataFrame()
 
