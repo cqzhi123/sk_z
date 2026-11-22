@@ -56,7 +56,7 @@ def EMA(values, period):
 
 #####################################################################################
 
-st.markdown("<div style='height: 7.3rem;'></div>", unsafe_allow_html=True)
+st.markdown("<div style='height: 8.8rem;'></div>", unsafe_allow_html=True)
 st.title('Stock App')
 
 ticker_options = [
@@ -252,6 +252,174 @@ def get_company_info(symbol):
 
 ticker_info = get_company_info(user_ticker)
 
+# Earnings dates are current company events, independent of price/backtest dates.
+def earnings_date(value, timezone=None):
+    """Accept Yahoo calendar dates, timestamps and Unix seconds safely."""
+    try:
+        if value is None or pd.isna(value):
+            return None
+        if isinstance(value, (int, float, np.integer, np.floating)):
+            if not np.isfinite(value) or value <= 0:
+                return None
+            stamp = pd.to_datetime(value, unit='ms' if value > 1e11 else 's', utc=True)
+        else:
+            stamp = pd.Timestamp(value)
+        if pd.isna(stamp):
+            return None
+        if stamp.tzinfo is not None and timezone:
+            stamp = stamp.tz_convert(timezone)
+        return stamp.date()
+    except (TypeError, ValueError, OverflowError, KeyError):
+        return None
+
+
+def earnings_dates_list(value, timezone=None):
+    values = value if isinstance(value, (list, tuple, np.ndarray, pd.Index, pd.Series)) else [value]
+    return sorted({d for item in values if (d := earnings_date(item, timezone)) is not None})
+
+
+def earnings_number(value):
+    try:
+        if isinstance(value, str):
+            value = value.replace('%', '').replace(',', '').strip()
+        result = float(value)
+        return result if np.isfinite(result) else np.nan
+    except (TypeError, ValueError, OverflowError):
+        return np.nan
+
+
+def earnings_timezone(symbol, info):
+    zone = info.get('exchangeTimezoneName')
+    if not zone and symbol.endswith('.KL'):
+        zone = 'Asia/Kuala_Lumpur'
+    try:
+        return str(ZoneInfo(zone)) if zone else None
+    except (ValueError, TypeError, KeyError):
+        return None
+
+
+def normalize_earnings_history(raw, timezone=None, period_end=False):
+    date_column = 'Fiscal Period End' if period_end else 'Earnings Date'
+    columns = [date_column, 'EPS Estimate', 'Reported EPS', 'Surprise (%)']
+    if not isinstance(raw, pd.DataFrame) or raw.empty:
+        return pd.DataFrame(columns=columns)
+    rows = []
+    for index, row in raw.iterrows():
+        event = str(row.get('Event Type', '')).strip().lower()
+        if event in {'call', 'meeting', '1', '11'}:
+            continue
+        date = earnings_date(row.get(date_column, index), timezone)
+        if date is None:
+            continue
+        estimate = earnings_number(row.get('EPS Estimate', row.get('epsEstimate')))
+        actual = earnings_number(row.get('Reported EPS', row.get('epsActual')))
+        surprise = earnings_number(row.get('Surprise (%)', row.get('Surprise(%)')))
+        if not np.isfinite(surprise):
+            # Yahoo's earnings_history surprisePercent is a fraction.
+            fraction = earnings_number(row.get('surprisePercent'))
+            if np.isfinite(fraction):
+                surprise = fraction * 100
+            elif np.isfinite(estimate) and np.isfinite(actual) and estimate != 0:
+                surprise = (actual - estimate) / abs(estimate) * 100
+        rows.append({date_column: date, 'EPS Estimate': estimate,
+                     'Reported EPS': actual, 'Surprise (%)': surprise})
+    if not rows:
+        return pd.DataFrame(columns=columns)
+    table = pd.DataFrame(rows, columns=columns)
+    # Prefer a row with actual EPS if a provider returns duplicate dates.
+    table['_reported'] = table['Reported EPS'].notna()
+    return (table.sort_values([date_column, '_reported'], ascending=False)
+            .drop_duplicates(date_column).drop(columns='_reported').reset_index(drop=True))
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def get_earnings_calendar(symbol):
+    try:
+        calendar = yf.Ticker(symbol).calendar
+        return calendar if isinstance(calendar, dict) else {}
+    except Exception as exc:
+        logger.warning('Earnings calendar failed for %s: %r', symbol, exc)
+        return {}
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def get_earnings_events(symbol, timezone):
+    try:
+        raw = yf.Ticker(symbol).get_earnings_dates(limit=24)
+        return normalize_earnings_history(raw, timezone)
+    except Exception as exc:
+        logger.warning('Earnings dates failed for %s: %r', symbol, exc)
+        return normalize_earnings_history(None)
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def get_earnings_period_history(symbol):
+    try:
+        raw = yf.Ticker(symbol).get_earnings_history()
+        return normalize_earnings_history(raw, period_end=True)
+    except Exception as exc:
+        logger.warning('Earnings period history failed for %s: %r', symbol, exc)
+        return normalize_earnings_history(None, period_end=True)
+
+
+def next_earnings_event(calendar, info, today, timezone, events=None):
+    """Keep date ranges, never show an expired date as an upcoming event."""
+    dates = earnings_dates_list(calendar.get('Earnings Date'), timezone)
+    source = 'Yahoo Finance calendar'
+    if not dates or dates[-1] < today:
+        dates = earnings_dates_list([info.get('earningsTimestampStart'), info.get('earningsTimestampEnd')], timezone)
+        source = 'Yahoo Finance company data'
+    if not dates or dates[-1] < today:
+        dates = earnings_dates_list(info.get('earningsTimestamp'), timezone)
+        source = 'Yahoo Finance company data'
+    if dates and dates[-1] >= today:
+        return {'start': dates[0], 'end': dates[-1], 'source': source}
+    if isinstance(events, pd.DataFrame) and not events.empty:
+        upcoming = events.loc[(events['Earnings Date'] >= today) & events['Reported EPS'].isna()]
+        if not upcoming.empty:
+            date = upcoming['Earnings Date'].min()
+            return {'start': date, 'end': date, 'source': 'Yahoo Finance earnings dates'}
+    return None
+
+
+def earnings_date_label(event):
+    if not event:
+        return 'Unavailable'
+    first, last = event['start'], event['end']
+    return first.strftime('%d %b %Y') if first == last else f'{first:%d %b %Y} – {last:%d %b %Y}'
+
+
+def earnings_countdown(event, today):
+    if not event:
+        return 'Date unavailable', 'unknown'
+    days = (event['start'] - today).days
+    if days < 0:
+        return 'Estimated window in progress', 'urgent'
+    if days == 0:
+        return 'Earnings today (Est.)' if event['start'] == event['end'] else 'Earnings window starts today (Est.)', 'urgent'
+    prefix = 'Earnings window starts in' if event['start'] != event['end'] else 'Earnings in'
+    return f'{prefix} {days} day{"s" if days != 1 else ""} (Est.)', 'urgent' if days <= 3 else 'soon' if days <= 7 else 'normal'
+
+
+# Calendar first; the historical endpoint is queried on other pages only as a fallback.
+earnings_zone = earnings_timezone(user_ticker, ticker_info)
+earnings_calendar = get_earnings_calendar(user_ticker)
+earnings_events = None
+upcoming_earnings = next_earnings_event(earnings_calendar, ticker_info, today_malaysia, earnings_zone)
+if backtest_view == 'Fundamental' or upcoming_earnings is None:
+    earnings_events = get_earnings_events(user_ticker, earnings_zone)
+    upcoming_earnings = next_earnings_event(earnings_calendar, ticker_info, today_malaysia, earnings_zone, earnings_events)
+earnings_alert, earnings_alert_class = earnings_countdown(upcoming_earnings, today_malaysia)
+if upcoming_earnings:
+    earnings_alert_html = (
+        f'<div class="stock-earnings-alert {earnings_alert_class}" '
+        f'title="{escape(earnings_date_label(upcoming_earnings), quote=True)} · Estimated">'
+        f'&#128197; {escape(earnings_alert)}</div>'
+    )
+else:
+    earnings_alert_html = '<div class="stock-earnings-alert unknown">&#128197; Earnings date unavailable</div>'
+
+
 company_name = (
     ticker_info.get("longName")
     or ticker_info.get("shortName")
@@ -384,6 +552,16 @@ st.markdown(
         overflow: hidden;
         text-overflow: ellipsis;
     }}
+    .stock-earnings-alert {{
+        margin-top: 0.22rem;
+        font-size: 0.78rem;
+        font-weight: 600;
+        color: #cbd5e1;
+        white-space: nowrap;
+    }}
+    .stock-earnings-alert.soon {{ color: #f59e0b; }}
+    .stock-earnings-alert.urgent {{ color: #ff6b6b; }}
+    .stock-earnings-alert.unknown {{ color: #9ca3af; font-weight: 400; }}
     .stock-company-header-spacer {{
         height: 0;
     }}
@@ -428,6 +606,7 @@ st.markdown(
                     <div class="stock-company-meta">
                         {display_ticker} · {display_company_country} · {date_range_label}
                     </div>
+                    {earnings_alert_html}
                 </div>
             </div>
             <div class="stock-view-switcher">
@@ -686,6 +865,83 @@ def display_quarterly_statements(symbol, financial_currency):
             )
 
 
+def display_earnings_comparison(history, date_column, symbol, key):
+    if history.empty:
+        st.info('No historical earnings data was returned by Yahoo Finance.')
+        return
+    actual_rows = history.loc[history['Reported EPS'].notna() | history['EPS Estimate'].notna()].copy()
+    if not actual_rows.empty:
+        chart = actual_rows.sort_values(date_column).tail(12)
+        labels = chart[date_column].map(lambda d: d.isoformat())
+        fig = go.Figure()
+        fig.add_trace(go.Bar(x=labels, y=chart['EPS Estimate'], name='Estimated EPS', marker_color='#94A3B8'))
+        fig.add_trace(go.Bar(x=labels, y=chart['Reported EPS'], name='Reported EPS', marker_color='#22C55E'))
+        fig.update_layout(barmode='group', xaxis_title=date_column, yaxis_title='EPS', legend_title_text='', title='EPS Estimate vs Actual (Latest 12)')
+        fig.update_xaxes(type='category')
+        st.plotly_chart(fig, key=f'earnings_chart_{key}')
+    table = history.copy()
+    table[date_column] = table[date_column].map(lambda d: d.isoformat())
+    st.dataframe(table, width='stretch', hide_index=True)
+    st.download_button('Download Earnings CSV', table.to_csv(index=False).encode('utf-8'),
+                       file_name=f'{symbol}_{key}_earnings.csv', mime='text/csv', key=f'earnings_csv_{key}')
+
+
+def display_earnings_calendar(symbol, calendar, event, events, today, info, financial_currency):
+    st.subheader('Upcoming Earnings Report')
+    alert, level = earnings_countdown(event, today)
+    if event:
+        if level in {'urgent', 'soon'}:
+            st.warning(alert)
+        else:
+            st.info(alert)
+    else:
+        st.info('Next earnings date unavailable. Check the company investor relations announcements for the official schedule.')
+    event_history = events if isinstance(events, pd.DataFrame) else normalize_earnings_history(None)
+    historical = event_history.loc[(event_history['Earnings Date'] < today) | ((event_history['Earnings Date'] == today) & event_history['Reported EPS'].notna())].copy()
+    reported = historical.loc[historical['Reported EPS'].notna()]
+    latest = reported.iloc[0] if not reported.empty else None
+    currency_prefix = f'{financial_currency} ' if financial_currency else ''
+    date_from_calendar = earnings_dates_list(calendar.get('Earnings Date'), earnings_zone)
+    # Avoid associating stale calendar consensus with a different future event.
+    estimates_current = bool(event and date_from_calendar and date_from_calendar[-1] >= today and event['source'] == 'Yahoo Finance calendar')
+    eps_estimate = calendar.get('Earnings Average') if estimates_current else None
+    revenue_estimate = calendar.get('Revenue Average') if estimates_current else None
+    if event and not estimates_current:
+        candidates = event_history.loc[(event_history['Earnings Date'] >= event['start']) & (event_history['Earnings Date'] <= event['end']) & event_history['Reported EPS'].isna() & event_history['EPS Estimate'].notna()]
+        if not candidates.empty:
+            eps_estimate = candidates.sort_values('Earnings Date').iloc[0]['EPS Estimate']
+    metric_grid([
+        ('Next Earnings Date', earnings_date_label(event)),
+        ('Report Status', 'Estimated / unconfirmed' if event else 'Unavailable'),
+        ('EPS Estimate', formatted(eps_estimate, digits=4)),
+        ('Revenue Estimate', formatted(revenue_estimate, compact=True, prefix=currency_prefix)),
+        ('Last Reported EPS Date', latest['Earnings Date'].strftime('%d %b %Y') if latest is not None else '—'),
+        ('Last Reported EPS', formatted(latest['Reported EPS'], digits=4) if latest is not None else '—'),
+        ('Last Earnings Surprise', formatted(latest['Surprise (%)'], suffix='%') if latest is not None else '—'),
+        ('Latest Fiscal Period End', next((d.strftime('%d %b %Y') for d in get_quarterly_statements(symbol)['Income Statement'].columns[:1]), '—')),
+    ], count=2)
+    st.caption(f"Date source: {event['source'] if event else 'Yahoo Finance (no upcoming date returned)'} · Countdown uses Malaysia's current date ({today:%Y-%m-%d}). Dates are indicative, not official confirmation. Calendar data is independent of the selected backtest dates. EPS uses provider-reported units; report dates may differ from fiscal period ends.")
+    if info.get('website'):
+        website = str(info['website'])
+        if '://' not in website:
+            website = 'https://' + website
+        if urlparse(website).scheme in {'http', 'https'} and urlparse(website).netloc:
+            st.link_button('Company Website / Investor Relations', website)
+    st.subheader('Historical Earnings')
+    st.caption('Historical announcement dates from Yahoo Finance. Missing estimates or reported EPS are not zero. Future announcements are excluded.')
+    if not historical.empty:
+        display_earnings_comparison(historical, 'Earnings Date', symbol, 'announcement')
+    # Fallback retains fiscal-period dates rather than mislabeling them as report dates.
+    if historical.empty or historical['Reported EPS'].notna().sum() == 0:
+        period_history = get_earnings_period_history(symbol)
+        period_history = period_history.loc[period_history['Fiscal Period End'] <= today]
+        if period_history.empty:
+            st.info('Historical EPS comparison is unavailable for this stock.')
+        else:
+            st.caption('Fallback: fiscal-period EPS history, not announcement dates.')
+            display_earnings_comparison(period_history, 'Fiscal Period End', symbol, 'fiscal_period')
+
+
 @st.cache_data(ttl=900, show_spinner=False)
 def get_dividend_history(symbol, start, end):
     try:
@@ -792,6 +1048,7 @@ if backtest_view == "Fundamental":
     financial_currency = str(ticker_info.get("financialCurrency") or "")
     financial_prefix = f"{financial_currency} " if financial_currency else ""
     info = ticker_info
+    display_earnings_calendar(user_ticker, earnings_calendar, upcoming_earnings, earnings_events, today_malaysia, info, financial_currency)
     groups = {
         "Valuation": [("Market Cap", formatted(info.get("marketCap"), prefix=price_prefix, compact=True)), ("P/E (TTM)", formatted(info.get("trailingPE"))), ("Forward P/E", formatted(info.get("forwardPE"))), ("Price / Book", formatted(info.get("priceToBook"))), ("EPS (TTM)", formatted(info.get("trailingEps"), prefix=price_prefix)), ("Trailing Annual Dividend Yield", percent(info.get("trailingAnnualDividendYield")))],
         "Growth & Profitability": [("Revenue (TTM)", formatted(info.get("totalRevenue"), prefix=financial_prefix, compact=True)), ("Revenue Growth", percent(info.get("revenueGrowth"))), ("Earnings Growth", percent(info.get("earningsGrowth"))), ("Return on Equity", percent(info.get("returnOnEquity"))), ("Return on Assets", percent(info.get("returnOnAssets"))), ("Profit Margin", percent(info.get("profitMargins")))],
