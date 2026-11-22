@@ -56,7 +56,7 @@ def EMA(values, period):
 
 #####################################################################################
 
-st.markdown("<div style='height: 3.75rem;'></div>", unsafe_allow_html=True)
+st.markdown("<div style='height: 7.3rem;'></div>", unsafe_allow_html=True)
 st.title('Stock App')
 
 ticker_options = [
@@ -146,9 +146,10 @@ date_range_label = (
     f"{user_input_end.strftime('%Y-%m-%d')}"
 )
 
-backtest_view = st.query_params.get("view", "Daily")
-if backtest_view not in {"Summary", "Daily", "Weekly"}:
-    backtest_view = "Daily"
+NAVIGATION_VIEWS = ("Overview", "Daily", "Weekly", "Monthly", "Summary", "Fundamental", "Dividend", "News")
+backtest_view = st.query_params.get("view", "Overview")
+if backtest_view not in NAVIGATION_VIEWS:
+    backtest_view = "Overview"
 
 #####################################################################################
 
@@ -193,7 +194,16 @@ if missing_columns:
     )
     st.stop()
 
-df = df.reset_index().dropna()
+if "Volume" not in df.columns:
+    df["Volume"] = 0
+if "Volume" in df.columns:
+    df["Volume"] = df["Volume"].fillna(0)
+df = df.reset_index().dropna(subset=["Open", "High", "Low", "Close"])
+if df.empty:
+    st.warning("No valid price bars were returned for the selected range.")
+    st.stop()
+df["Date"] = pd.to_datetime(df["Date"]).dt.tz_localize(None)
+df = df.sort_values("Date").reset_index(drop=True)
 df1 = df.copy()
 tickerData = yf.Ticker(user_ticker) # Get ticker data
 
@@ -237,7 +247,7 @@ def get_company_info(symbol):
             logger.warning("Ticker search failed for %s: %r", symbol, exc)
 
     # Method 3: Merge backup values and available Yahoo Finance values.
-    return {**fallback, **{key: value for key, value in info.items() if value}}
+    return {**fallback, **{key: value for key, value in info.items() if value is not None and value != ""}}
 
 
 ticker_info = get_company_info(user_ticker)
@@ -292,9 +302,16 @@ end_date_url_param = (
     f"&amp;end={user_input_end.isoformat()}"
     if user_input_end != today_malaysia else ""
 )
-summary_button_class = "active" if backtest_view == "Summary" else ""
-daily_button_class = "active" if backtest_view == "Daily" else ""
-weekly_button_class = "active" if backtest_view == "Weekly" else ""
+navigation_html = "".join(
+    '<a class="stock-view-button {active}" '
+    'href="?view={view}&amp;ticker={ticker}&amp;start={start}{end}" '
+    'target="_self" {aria}>{view}</a>'.format(
+        active="active" if backtest_view == view else "",
+        view=view, ticker=ticker_url_value, start=start_date_url_value,
+        end=end_date_url_param, aria='aria-current="page"' if backtest_view == view else "",
+    )
+    for view in NAVIGATION_VIEWS
+)
 st.markdown(
     f"""
     <style>
@@ -315,8 +332,9 @@ st.markdown(
     .stock-company-header-inner {{
         display: flex;
         align-items: center;
-        justify-content: space-between;
-        gap: 1rem;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0.55rem;
     }}
     .stock-company-details {{
         min-width: 0;
@@ -354,22 +372,34 @@ st.markdown(
         font-size: 1.15rem;
         font-weight: 700;
         line-height: 1.25;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
     }}
     .stock-company-meta {{
         margin-top: 0.2rem;
         font-size: 0.82rem;
         opacity: 0.75;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
     }}
     .stock-company-header-spacer {{
-        height: 3.75rem;
+        height: 0;
     }}
     .stock-view-switcher {{
         display: flex;
         gap: 0.4rem;
-        flex-shrink: 0;
+        width: 100%;
+        min-width: 0;
+        overflow-x: auto;
+        padding-bottom: 0.2rem;
+        scrollbar-width: thin;
     }}
     .stock-view-button {{
         display: inline-block;
+        flex: 0 0 auto;
+        white-space: nowrap;
         padding: 0.42rem 0.8rem;
         border: 1px solid rgba(250, 250, 250, 0.35);
         border-radius: 0.45rem;
@@ -383,14 +413,10 @@ st.markdown(
         background: #ff4b4b;
     }}
     @media (max-width: 640px) {{
-        .stock-company-header-inner {{
-            align-items: flex-start;
-            flex-direction: column;
-            gap: 0.55rem;
-        }}
-        .stock-company-header-spacer {{
-            height: 5.6rem;
-        }}
+        .stock-company-header {{ padding: 0.5rem 0.7rem; }}
+        .stock-company-name {{ font-size: 1rem; }}
+        .stock-company-meta {{ font-size: 0.72rem; }}
+        .stock-view-button {{ padding: 0.35rem 0.65rem; }}
     }}
     </style>
     <div class="stock-company-header">
@@ -405,9 +431,7 @@ st.markdown(
                 </div>
             </div>
             <div class="stock-view-switcher">
-                <a class="stock-view-button {daily_button_class}" href="?view=Daily&amp;ticker={ticker_url_value}&amp;start={start_date_url_value}{end_date_url_param}" target="_self">Daily</a>
-                <a class="stock-view-button {weekly_button_class}" href="?view=Weekly&amp;ticker={ticker_url_value}&amp;start={start_date_url_value}{end_date_url_param}" target="_self">Weekly</a>
-                <a class="stock-view-button {summary_button_class}" href="?view=Summary&amp;ticker={ticker_url_value}&amp;start={start_date_url_value}{end_date_url_param}" target="_self">Summary</a>
+                {navigation_html}
             </div>
         </div>
     </div>
@@ -430,6 +454,7 @@ weekly = (
     df1.set_index("Date")
        .resample("W-Fri")
        .agg(weekly_aggregations)
+       .dropna(subset=["Open", "High", "Low", "Close"])
 )
 
 if "Volume" not in weekly.columns:
@@ -444,15 +469,6 @@ df2 = df
 
 #CHANGE A LOT AAAAAAAAA, PUT IMPORTANT PARAMETER BEFORE THIS
 
-try:
-    hist = tickerData.history(start=user_input_start, end=download_end_date)
-except Exception:
-    hist = pd.DataFrame()
-
-if "Dividends" in hist.columns and hist["Dividends"].notna().any():
-    hist1 = hist[["Dividends"]].copy()
-else:
-    hist1 = pd.DataFrame()
 #hist2 = hist[["Dividends","Stock Splits"]]
 
 #####################################################################################
@@ -484,7 +500,7 @@ if backtest_view == "Daily":
 
 df["ema_10"] = df.Close.ewm(span = ema_10, min_periods = ema_10).mean() 
 df["ema_20"] = df.Close.ewm(span = ema_20, min_periods = ema_20).mean() 
-df=df.dropna()
+# Keep the original price bars; EMA warm-up values may be NaN.
 
 #####################################################################################
 
@@ -532,6 +548,242 @@ def plot_candlestick(data, title):
     fig.add_trace(go.Scatter(x=x, y=chart["ema_20"], name="EMA 20", line=dict(color="red")))
     fig.update_layout(title=title, xaxis_rangeslider_visible=False)
     return fig
+
+# New navigation pages. Prices use the selected history; company fundamentals
+# and news are current Yahoo Finance snapshots, not historical point-in-time data.
+def number(value):
+    try:
+        result = float(value)
+        return result if np.isfinite(result) else None
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def formatted(value, digits=2, suffix="", prefix="", compact=False):
+    value = number(value)
+    if value is None:
+        return "—"
+    if compact:
+        for scale, unit in ((1e12, "T"), (1e9, "B"), (1e6, "M"), (1e3, "K")):
+            if abs(value) >= scale:
+                return f"{prefix}{value / scale:,.{digits}f}{unit}{suffix}"
+    return f"{prefix}{value:,.{digits}f}{suffix}"
+
+
+def percent(value):
+    value = number(value)
+    return formatted(value * 100 if value is not None else None, suffix="%")
+
+
+def metric_grid(items, count=3):
+    for offset in range(0, len(items), count):
+        for col, (label, value) in zip(st.columns(count), items[offset:offset + count]):
+            col.metric(label, value)
+
+
+def monthly_bars(data):
+    chart = data.copy().sort_values("Date")
+    chart["Month"] = pd.to_datetime(chart["Date"]).dt.to_period("M")
+    monthly = chart.groupby("Month", sort=True).agg(
+        Date=("Date", "last"), Open=("Open", "first"), High=("High", "max"),
+        Low=("Low", "min"), Close=("Close", "last"), Volume=("Volume", "sum"),
+    )
+    return monthly.reset_index(drop=True)
+
+
+def trend_status(data, fast, slow):
+    close = data["Close"].dropna()
+    if len(close) < slow:
+        return "Insufficient data"
+    a = close.ewm(span=fast, min_periods=fast, adjust=False).mean().iloc[-1]
+    b = close.ewm(span=slow, min_periods=slow, adjust=False).mean().iloc[-1]
+    return "▲ Bullish" if a > b else "▼ Bearish" if a < b else "Neutral"
+
+
+def historical_performance(data):
+    close = data.set_index("Date")["Close"].dropna().sort_index()
+    latest = close.iloc[-1]
+    last_date = close.index[-1]
+    def change(previous):
+        return formatted((latest / previous - 1) * 100, suffix="%") if previous != 0 else "—"
+    result = [("1 Day", change(close.iloc[-2]) if len(close) >= 2 else "—")]
+    for label, cutoff in (
+        ("1 Week", last_date - pd.DateOffset(weeks=1)),
+        ("1 Month", last_date - pd.DateOffset(months=1)),
+        ("3 Months", last_date - pd.DateOffset(months=3)),
+        ("YTD", pd.Timestamp(last_date.year - 1, 12, 31)),
+        ("1 Year", last_date - pd.DateOffset(years=1)),
+    ):
+        earlier = close.loc[close.index <= cutoff]
+        result.append((label, change(earlier.iloc[-1]) if not earlier.empty else "—"))
+    return result
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def get_dividend_history(symbol, start, end):
+    try:
+        history = yf.Ticker(symbol).history(start=start, end=end, actions=True, auto_adjust=False)
+        if history.empty:
+            return None
+        if "Dividends" not in history:
+            return None
+        payments = history.loc[history["Dividends"] > 0, ["Dividends"]].copy()
+        payments.index = pd.to_datetime(payments.index).tz_localize(None)
+        return payments
+    except Exception as exc:
+        logger.warning("Dividend history failed for %s: %r", symbol, exc)
+        return None
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def get_company_news(symbol):
+    try:
+        ticker = yf.Ticker(symbol)
+        return ticker.get_news(count=15) or []
+    except Exception as exc:
+        logger.warning("News failed for %s: %r", symbol, exc)
+        return None
+
+
+def news_fields(item):
+    if not isinstance(item, dict):
+        return None
+    content = item.get("content") or item
+    if not isinstance(content, dict):
+        return None
+    title = content.get("title")
+    if not title:
+        return None
+    provider = content.get("provider") or {}
+    publisher = provider.get("displayName") if isinstance(provider, dict) else None
+    publisher = publisher or content.get("publisher") or "Unknown publisher"
+    link = ""
+    for candidate in (content.get("canonicalUrl"), content.get("clickThroughUrl"),
+                      content.get("link"), item.get("link")):
+        if isinstance(candidate, dict):
+            candidate = candidate.get("url")
+        if isinstance(candidate, str):
+            try:
+                parsed = urlparse(candidate)
+                if parsed.scheme in {"http", "https"} and parsed.netloc:
+                    link = candidate
+                    break
+            except ValueError:
+                pass
+    raw_date = content.get("pubDate") or content.get("providerPublishTime")
+    try:
+        date = pd.to_datetime(raw_date, unit="s", utc=True) if isinstance(raw_date, (int, float)) else pd.to_datetime(raw_date, utc=True)
+        date = date.tz_convert("Asia/Kuala_Lumpur").strftime("%Y-%m-%d %H:%M MYT") if pd.notna(date) else "Date unavailable"
+    except (TypeError, ValueError, OverflowError):
+        date = "Date unavailable"
+    return str(title), str(publisher), date, link
+
+
+currency = str(ticker_info.get("currency") or "")
+price_prefix = f"{currency} " if currency else ""
+monthly = monthly_bars(df1)
+
+if backtest_view == "Overview":
+    st.header("Stock Overview")
+    latest = df1.iloc[-1]
+    st.caption(f"Last available bar in selected date range: {pd.Timestamp(latest['Date']):%Y-%m-%d} · Historical prices follow the app's Yahoo Finance download settings; not a live quote.")
+    previous = number(df1["Close"].iloc[-2]) if len(df1) > 1 else None
+    close = number(latest["Close"])
+    delta = formatted((close / previous - 1) * 100, suffix="%") if close is not None and previous not in (None, 0) else None
+    cols = st.columns(3)
+    cols[0].metric("Last Close", formatted(close, prefix=price_prefix), delta=delta)
+    cols[1].metric("Day High", formatted(latest["High"], prefix=price_prefix))
+    cols[2].metric("Day Low", formatted(latest["Low"], prefix=price_prefix))
+    metric_grid([("Day Open", formatted(latest["Open"], prefix=price_prefix)), ("Volume", formatted(latest["Volume"], compact=True)), ("Currency", currency or "—")])
+    st.subheader("Price Performance")
+    metric_grid(historical_performance(df1))
+    st.caption("Returns use the selected price history ending at its last available bar. Missing lookback history is shown as —.")
+    st.subheader("Technical Trend Overview")
+    trends = pd.DataFrame({
+        "Indicator": ["EMA 10 / 20", "EMA 30 / 60"],
+        **{label: [trend_status(data, 10, 20), trend_status(data, 30, 60)] for label, data in (("Daily", df1), ("Weekly", weekly), ("Monthly", monthly))},
+    })
+    st.dataframe(trends, hide_index=True, width="stretch")
+    st.caption("EMA uses adjust=False, as in the backtest indicator. Current weekly/monthly bars may be incomplete. Trend is not a trade entry signal.")
+    st.plotly_chart(plot_candlestick(df1, f"Daily Chart - {user_ticker}"), key="overview_chart")
+    st.stop()
+
+if backtest_view == "Monthly":
+    st.header("Monthly Market Data")
+    st.caption(f"{date_range_label} · Monthly OHLCV aggregated from the selected daily data. First/last months may be partial; dates show the last available trading day.")
+    display_table(monthly, rows=24)
+    chart = plot_candlestick(monthly, f"Monthly Chart - {user_ticker}")
+    for period, color in ((30, "#A855F7"), (60, "#F97316")):
+        chart.add_trace(go.Scatter(x=monthly["Date"], y=monthly["Close"].ewm(span=period, min_periods=period).mean(), name=f"EMA {period}", line=dict(color=color)))
+    st.plotly_chart(chart, key="monthly_candlestick_chart")
+    metric_grid([("EMA 10 / 20", trend_status(monthly, 10, 20)), ("EMA 30 / 60", trend_status(monthly, 30, 60)), ("Monthly Bars", str(len(monthly)))])
+    st.caption("Monthly is a chart and trend page. The original backtesting strategies remain available on Daily, Weekly and Summary.")
+    st.stop()
+
+if backtest_view == "Fundamental":
+    st.header("Fundamental Analysis")
+    st.caption("Latest available Yahoo Finance company snapshot, not historical data as of the selected End Date. Statement currency may differ from trading currency.")
+    financial_currency = str(ticker_info.get("financialCurrency") or "")
+    financial_prefix = f"{financial_currency} " if financial_currency else ""
+    info = ticker_info
+    groups = {
+        "Valuation": [("Market Cap", formatted(info.get("marketCap"), prefix=price_prefix, compact=True)), ("P/E (TTM)", formatted(info.get("trailingPE"))), ("Forward P/E", formatted(info.get("forwardPE"))), ("Price / Book", formatted(info.get("priceToBook"))), ("EPS (TTM)", formatted(info.get("trailingEps"), prefix=price_prefix)), ("Trailing Annual Dividend Yield", percent(info.get("trailingAnnualDividendYield")))],
+        "Growth & Profitability": [("Revenue (TTM)", formatted(info.get("totalRevenue"), prefix=financial_prefix, compact=True)), ("Revenue Growth", percent(info.get("revenueGrowth"))), ("Earnings Growth", percent(info.get("earningsGrowth"))), ("Return on Equity", percent(info.get("returnOnEquity"))), ("Return on Assets", percent(info.get("returnOnAssets"))), ("Profit Margin", percent(info.get("profitMargins")))],
+        "Balance Sheet": [("Total Cash", formatted(info.get("totalCash"), prefix=financial_prefix, compact=True)), ("Total Debt", formatted(info.get("totalDebt"), prefix=financial_prefix, compact=True)), ("Debt / Equity", formatted(info.get("debtToEquity"), suffix="%"))],
+    }
+    if all(value == "—" for items in groups.values() for _, value in items):
+        st.info("Fundamental metrics are currently unavailable for this instrument. Yahoo Finance may not provide company data or the request may have failed.")
+    for heading, items in groups.items():
+        st.subheader(heading)
+        metric_grid(items)
+    st.subheader("Company Profile")
+    st.write(company_name)
+    st.write(f"Sector: {info.get('sector') or '—'} · Industry: {info.get('industry') or '—'}")
+    if info.get("longBusinessSummary"):
+        st.write(str(info["longBusinessSummary"]))
+    st.stop()
+
+if backtest_view == "Dividend":
+    st.header("Dividend History")
+    st.caption(f"Cash distributions recorded during {date_range_label}. Amounts are per share, subject to Yahoo Finance coverage.")
+    payments = get_dividend_history(user_ticker, user_input_start, download_end_date)
+    if payments is None:
+        st.info("Dividend data is unavailable. Please try again later or choose another stock.")
+    elif payments.empty:
+        st.info("No cash dividend records were returned for this date range.")
+    else:
+        annual = payments["Dividends"].groupby(payments.index.year).sum()
+        metric_grid([("Total per Share (Selected Range)", formatted(payments["Dividends"].sum(), prefix=price_prefix, digits=4)), ("Latest Dividend per Share", formatted(payments["Dividends"].iloc[-1], prefix=price_prefix, digits=4)), ("Last Dividend Date", payments.index[-1].strftime("%Y-%m-%d"))])
+        st.subheader("Annual Dividend per Share")
+        st.caption("First and last years may be partial according to the selected date range.")
+        st.plotly_chart(go.Figure(go.Bar(x=annual.index.astype(str), y=annual.values, name="Dividend per Share")), key="annual_dividend_chart")
+        records = payments.rename_axis("Date").reset_index().sort_values("Date", ascending=False)
+        st.dataframe(records, width="stretch", hide_index=True)
+        st.download_button("Download Dividend CSV", records.to_csv(index=False).encode("utf-8"), file_name=f"{user_ticker}_dividends.csv", mime="text/csv")
+    st.stop()
+
+if backtest_view == "News":
+    st.header("Company News")
+    st.caption("Latest articles returned by Yahoo Finance; independent of the selected historical date range. Times shown in Malaysia time (MYT).")
+    articles = get_company_news(user_ticker)
+    seen = set()
+    for article in articles or []:
+        row = news_fields(article)
+        if row is None:
+            continue
+        title, publisher, date, link = row
+        if (title, link) in seen:
+            continue
+        seen.add((title, link))
+        st.write(title)
+        st.caption(f"{publisher} · {date}")
+        if link:
+            st.link_button("Read article", link)
+        st.divider()
+    if not seen:
+        st.info("No news is currently available for this instrument, or the news request failed.")
+    st.stop()
+
 
 if backtest_view == "Daily":
     fig4 = plot_candlestick(
@@ -680,39 +932,43 @@ class EmaCrossLongOnly30_60(EmaCrossLongOnly):
     slow_period = 60
 
 
-daily_backtest_data = df1.set_index("Date").copy()
-daily_backtest_data.index = pd.to_datetime(daily_backtest_data.index)
-bt_daily = FractionalBacktest(daily_backtest_data,EmaCrossLongOnly,cash=1000, commission=0.002,trade_on_close=True)
-bt_daily_stats = bt_daily.run()
-print("Daily backtest results:")
-print(bt_daily_stats.to_string())
+if backtest_view in {"Daily", "Summary"}:
+    if len(df1) < 61:
+        st.info("Select a longer date range (at least 61 daily bars) to run all four strategies.")
+        st.stop()
+    daily_backtest_data = df1.set_index("Date").copy()
+    daily_backtest_data.index = pd.to_datetime(daily_backtest_data.index)
+    bt_daily = FractionalBacktest(daily_backtest_data,EmaCrossLongOnly,cash=1000, commission=0.002,trade_on_close=True)
+    bt_daily_stats = bt_daily.run()
+    print("Daily backtest results:")
+    print(bt_daily_stats.to_string())
 
-bt_daily_atr = FractionalBacktest(daily_backtest_data,EmaCross,cash=1000, commission=0.002,trade_on_close=True)
-bt_daily_atr_stats = bt_daily_atr.run()
-print("Daily EMA + ATR backtest results:")
-print(bt_daily_atr_stats.to_string())
+    bt_daily_atr = FractionalBacktest(daily_backtest_data,EmaCross,cash=1000, commission=0.002,trade_on_close=True)
+    bt_daily_atr_stats = bt_daily_atr.run()
+    print("Daily EMA + ATR backtest results:")
+    print(bt_daily_atr_stats.to_string())
 
-bt_daily_30_60 = FractionalBacktest(
-    daily_backtest_data,
-    EmaCross30_60,
-    cash=1000,
-    commission=0.002,
-    trade_on_close=True,
-)
-bt_daily_30_60_stats = bt_daily_30_60.run()
-print("Daily EMA 30/60 + ATR backtest results:")
-print(bt_daily_30_60_stats.to_string())
+    bt_daily_30_60 = FractionalBacktest(
+        daily_backtest_data,
+        EmaCross30_60,
+        cash=1000,
+        commission=0.002,
+        trade_on_close=True,
+    )
+    bt_daily_30_60_stats = bt_daily_30_60.run()
+    print("Daily EMA 30/60 + ATR backtest results:")
+    print(bt_daily_30_60_stats.to_string())
 
-bt_daily_long_30_60 = FractionalBacktest(
-    daily_backtest_data,
-    EmaCrossLongOnly30_60,
-    cash=1000,
-    commission=0.002,
-    trade_on_close=True,
-)
-bt_daily_long_30_60_stats = bt_daily_long_30_60.run()
-print("Daily EMA 30/60 Exit results:")
-print(bt_daily_long_30_60_stats.to_string())
+    bt_daily_long_30_60 = FractionalBacktest(
+        daily_backtest_data,
+        EmaCrossLongOnly30_60,
+        cash=1000,
+        commission=0.002,
+        trade_on_close=True,
+    )
+    bt_daily_long_30_60_stats = bt_daily_long_30_60.run()
+    print("Daily EMA 30/60 Exit results:")
+    print(bt_daily_long_30_60_stats.to_string())
 
 
 strategy_colors = {
@@ -1081,37 +1337,41 @@ if backtest_view == "Daily":
 
 #####################################################################################
 
-bt_weekly = FractionalBacktest(weekly1, EmaCrossLongOnly,cash=1000, commission=0.002,trade_on_close=True)
-bt_weekly_stats = bt_weekly.run()
-print("Weekly backtest results:")
-print(bt_weekly_stats.to_string())
+if backtest_view in {"Weekly", "Summary"}:
+    if len(weekly1) < 61:
+        st.info("Select a longer date range (at least 61 weekly bars) to run all four strategies.")
+        st.stop()
+    bt_weekly = FractionalBacktest(weekly1, EmaCrossLongOnly,cash=1000, commission=0.002,trade_on_close=True)
+    bt_weekly_stats = bt_weekly.run()
+    print("Weekly backtest results:")
+    print(bt_weekly_stats.to_string())
 
-bt_weekly_atr = FractionalBacktest(weekly1, EmaCross,cash=1000, commission=0.002,trade_on_close=True)
-bt_weekly_atr_stats = bt_weekly_atr.run()
-print("Weekly EMA + ATR backtest results:")
-print(bt_weekly_atr_stats.to_string())
+    bt_weekly_atr = FractionalBacktest(weekly1, EmaCross,cash=1000, commission=0.002,trade_on_close=True)
+    bt_weekly_atr_stats = bt_weekly_atr.run()
+    print("Weekly EMA + ATR backtest results:")
+    print(bt_weekly_atr_stats.to_string())
 
-bt_weekly_30_60 = FractionalBacktest(
-    weekly1,
-    EmaCross30_60,
-    cash=1000,
-    commission=0.002,
-    trade_on_close=True,
-)
-bt_weekly_30_60_stats = bt_weekly_30_60.run()
-print("Weekly EMA 30/60 + ATR backtest results:")
-print(bt_weekly_30_60_stats.to_string())
+    bt_weekly_30_60 = FractionalBacktest(
+        weekly1,
+        EmaCross30_60,
+        cash=1000,
+        commission=0.002,
+        trade_on_close=True,
+    )
+    bt_weekly_30_60_stats = bt_weekly_30_60.run()
+    print("Weekly EMA 30/60 + ATR backtest results:")
+    print(bt_weekly_30_60_stats.to_string())
 
-bt_weekly_long_30_60 = FractionalBacktest(
-    weekly1,
-    EmaCrossLongOnly30_60,
-    cash=1000,
-    commission=0.002,
-    trade_on_close=True,
-)
-bt_weekly_long_30_60_stats = bt_weekly_long_30_60.run()
-print("Weekly EMA 30/60 Exit results:")
-print(bt_weekly_long_30_60_stats.to_string())
+    bt_weekly_long_30_60 = FractionalBacktest(
+        weekly1,
+        EmaCrossLongOnly30_60,
+        cash=1000,
+        commission=0.002,
+        trade_on_close=True,
+    )
+    bt_weekly_long_30_60_stats = bt_weekly_long_30_60.run()
+    print("Weekly EMA 30/60 Exit results:")
+    print(bt_weekly_long_30_60_stats.to_string())
 
 if backtest_view == "Weekly":
     display_strategy_legend()
