@@ -619,6 +619,73 @@ def historical_performance(data):
     return result
 
 
+def normalize_quarterly_statement(raw):
+    """Keep all reported fiscal quarter dates and every available line item."""
+    if not isinstance(raw, pd.DataFrame) or raw.empty:
+        return pd.DataFrame()
+    table = raw.copy()
+    dates = pd.to_datetime(table.columns, errors="coerce", utc=True)
+    valid = ~dates.isna()
+    table = table.loc[:, valid]
+    table.columns = dates[valid].tz_localize(None).normalize()
+    table = table.loc[:, ~table.columns.duplicated(keep="first")]
+    table = table.sort_index(axis=1, ascending=False)
+    return table.dropna(axis=1, how="all").dropna(axis=0, how="all")
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def get_quarterly_statements(symbol):
+    """Fetch each statement independently; one failed request cannot hide the others."""
+    ticker = yf.Ticker(symbol)
+    statements = {}
+    for title, method_name in (
+        ("Income Statement", "get_income_stmt"),
+        ("Balance Sheet", "get_balance_sheet"),
+        ("Cash Flow", "get_cashflow"),
+    ):
+        try:
+            method = getattr(ticker, method_name)
+            raw = method(pretty=True, freq="quarterly")
+            statements[title] = normalize_quarterly_statement(raw)
+        except Exception as exc:
+            logger.warning("Quarterly %s failed for %s: %r", title, symbol, exc)
+            statements[title] = pd.DataFrame()
+    return statements
+
+
+def display_quarterly_statements(symbol, financial_currency):
+    st.subheader("Quarterly Financial Statements")
+    st.caption(
+        "All available reported quarters, newest first. Column headers are fiscal "
+        "period-end dates, not necessarily calendar quarters or publication dates. "
+        "These are the latest available reports, independent of the selected price dates. "
+        f"Currency: {financial_currency or 'Not provided'}. Amounts are unscaled; "
+        "per-share and share-count rows retain their original units. Blank values are not zero."
+    )
+    statements = get_quarterly_statements(symbol)
+    for tab, (title, data) in zip(st.tabs(list(statements)), statements.items()):
+        with tab:
+            if data.empty:
+                st.info(f"Quarterly {title} is unavailable for this instrument.")
+                continue
+            table = data.copy()
+            table.columns = table.columns.strftime("%Y-%m-%d")
+            table.index.name = "Financial Item"
+            table = table.reset_index()
+            # Avoid a mixed object/number dtype in Streamlit's Arrow table.
+            for column in table.columns[1:]:
+                table[column] = pd.to_numeric(table[column], errors="coerce")
+            st.caption(f"{len(data.columns)} reported quarters · Latest: {table.columns[1]}")
+            st.dataframe(table, width="stretch", hide_index=True)
+            st.download_button(
+                f"Download Quarterly {title} CSV",
+                table.to_csv(index=False).encode("utf-8"),
+                file_name=f"{symbol}_quarterly_{title.lower().replace(' ', '_')}.csv",
+                mime="text/csv",
+                key=f"quarterly_{title}",
+            )
+
+
 @st.cache_data(ttl=900, show_spinner=False)
 def get_dividend_history(symbol, start, end):
     try:
@@ -717,8 +784,7 @@ if backtest_view == "Monthly":
         chart.add_trace(go.Scatter(x=monthly["Date"], y=monthly["Close"].ewm(span=period, min_periods=period).mean(), name=f"EMA {period}", line=dict(color=color)))
     st.plotly_chart(chart, key="monthly_candlestick_chart")
     metric_grid([("EMA 10 / 20", trend_status(monthly, 10, 20)), ("EMA 30 / 60", trend_status(monthly, 30, 60)), ("Monthly Bars", str(len(monthly)))])
-    st.caption("Monthly is a chart and trend page. The original backtesting strategies remain available on Daily, Weekly and Summary.")
-    st.stop()
+    st.caption("Monthly backtests below use EMA periods and ATR periods measured in monthly bars.")
 
 if backtest_view == "Fundamental":
     st.header("Fundamental Analysis")
@@ -736,6 +802,7 @@ if backtest_view == "Fundamental":
     for heading, items in groups.items():
         st.subheader(heading)
         metric_grid(items)
+    display_quarterly_statements(user_ticker, financial_currency)
     st.subheader("Company Profile")
     st.write(company_name)
     st.write(f"Sector: {info.get('sector') or '—'} · Industry: {info.get('industry') or '—'}")
@@ -932,7 +999,7 @@ class EmaCrossLongOnly30_60(EmaCrossLongOnly):
     slow_period = 60
 
 
-if backtest_view in {"Daily", "Summary"}:
+if backtest_view == "Daily":
     if len(df1) < 61:
         st.info("Select a longer date range (at least 61 daily bars) to run all four strategies.")
         st.stop()
@@ -1337,7 +1404,7 @@ if backtest_view == "Daily":
 
 #####################################################################################
 
-if backtest_view in {"Weekly", "Summary"}:
+if backtest_view == "Weekly":
     if len(weekly1) < 61:
         st.info("Select a longer date range (at least 61 weekly bars) to run all four strategies.")
         st.stop()
@@ -1411,23 +1478,84 @@ if backtest_view == "Weekly":
     }
     display_strategy_comparison(weekly_strategy_results, "Weekly Strategy Comparison")
 
-if backtest_view == "Summary":
-    st.markdown("## Daily & Weekly Strategy Dashboard")
-    st.caption("Compare the four strategies across both timeframes.")
+# Summary and Monthly run each strategy independently so that missing long-term
+# history in one timeframe does not suppress the available results in another.
+STRATEGY_CONFIGS = (
+    ("Short-Term Trend + ATR Stop", EmaCross, 20),
+    ("Long-Term Trend + ATR Stop", EmaCross30_60, 60),
+    ("Short-Term Trend + EMA Exit", EmaCrossLongOnly, 20),
+    ("Long-Term Trend + EMA Exit", EmaCrossLongOnly30_60, 60),
+)
 
-    daily_strategy_results = {
-        "Short-Term Trend + ATR Stop": bt_daily_atr_stats,
-        "Long-Term Trend + ATR Stop": bt_daily_30_60_stats,
-        "Short-Term Trend + EMA Exit": bt_daily_stats,
-        "Long-Term Trend + EMA Exit": bt_daily_long_30_60_stats,
+
+def prepare_backtest_bars(data):
+    bars = data.copy()
+    if "Date" in bars.columns:
+        bars = bars.set_index("Date")
+    bars.index = pd.to_datetime(bars.index)
+    columns = ["Open", "High", "Low", "Close", "Volume"]
+    if "Volume" not in bars.columns:
+        bars["Volume"] = 0
+    bars = bars[columns].apply(pd.to_numeric, errors="coerce")
+    bars = bars.replace([np.inf, -np.inf], np.nan)
+    bars = bars.dropna(subset=columns[:4])
+    bars = bars.loc[(bars[columns[:4]] > 0).all(axis=1)]
+    return bars.sort_index().loc[lambda frame: ~frame.index.duplicated(keep="last")]
+
+
+def run_timeframe_strategies(data, timeframe):
+    bars = prepare_backtest_bars(data)
+    results, unavailable = {}, {}
+    for name, strategy, warmup in STRATEGY_CONFIGS:
+        # The slow EMA has warmup-1 leading NaNs. Backtesting starts at
+        # warmup; require at least two post-warmup observations for trading.
+        minimum = warmup + 2
+        if len(bars) < minimum:
+            unavailable[name] = (
+                f"Needs at least {minimum} {timeframe.lower()} bars; "
+                f"{len(bars)} available. Select a longer date range."
+            )
+            continue
+        try:
+            bt = FractionalBacktest(
+                bars.copy(), strategy, cash=1000,
+                commission=0.002, trade_on_close=True,
+            )
+            results[name] = bt.run()
+        except Exception as exc:
+            logger.exception("%s %s backtest failed", timeframe, name)
+            unavailable[name] = f"Backtest failed ({type(exc).__name__}). See server logs."
+    return results, unavailable
+
+
+def display_timeframe_comparison(results, unavailable, timeframe):
+    # Empty series retain all four strategy columns with explicit missing values.
+    comparison = {
+        name: results.get(name, pd.Series(dtype=float))
+        for name, _, _ in STRATEGY_CONFIGS
     }
-    weekly_strategy_results = {
-        "Short-Term Trend + ATR Stop": bt_weekly_atr_stats,
-        "Long-Term Trend + ATR Stop": bt_weekly_30_60_stats,
-        "Short-Term Trend + EMA Exit": bt_weekly_stats,
-        "Long-Term Trend + EMA Exit": bt_weekly_long_30_60_stats,
-    }
-    display_summary_highlights(daily_strategy_results, "Daily")
-    display_summary_highlights(weekly_strategy_results, "Weekly")
-    display_strategy_comparison(daily_strategy_results, "Daily Strategy Comparison")
-    display_strategy_comparison(weekly_strategy_results, "Weekly Strategy Comparison")
+    display_summary_highlights(results, timeframe)
+    display_strategy_comparison(comparison, f"{timeframe} Strategy Comparison")
+    for name, reason in unavailable.items():
+        st.caption(f"{name}: {reason}")
+
+
+if backtest_view == "Monthly":
+    st.header("Monthly Strategy Backtests")
+    st.caption("Uses monthly OHLCV, the same four strategies, starting cash 1,000 and commission 0.2%. First and last months may be partial.")
+    monthly_strategy_results, monthly_unavailable = run_timeframe_strategies(monthly, "Monthly")
+    display_strategy_legend()
+    for name, stats in monthly_strategy_results.items():
+        display_backtest_stats(stats, name)
+        display_trade_log(stats, f"{name} Trade Records")
+        display_special_objects(stats, name)
+    display_timeframe_comparison(monthly_strategy_results, monthly_unavailable, "Monthly")
+
+
+if backtest_view == "Summary":
+    st.markdown("## Daily, Weekly & Monthly Strategy Dashboard")
+    st.caption("Compare the four strategies across three timeframes. Each is a separate simulation with the same parameters; EMA and ATR periods refer to bars of that timeframe. Weekly and monthly boundary bars may be partial.")
+
+    for timeframe, bars in (("Daily", df1), ("Weekly", weekly1), ("Monthly", monthly)):
+        results, unavailable = run_timeframe_strategies(bars, timeframe)
+        display_timeframe_comparison(results, unavailable, timeframe)
